@@ -1,0 +1,4 @@
+column_name,type,size
+id,INT,4
+name,CHAR,20
+age,INT,4
