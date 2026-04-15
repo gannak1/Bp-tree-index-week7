@@ -152,6 +152,10 @@ static int bounded_strlen(const char *s, int max_width) {
     return len > max_width ? max_width : len;
 }
 
+static const ColumnId DEFAULT_SELECT_COLUMNS[MAX_COLUMNS] = {
+    COL_ID, COL_NAME, COL_AGE, COL_EMAIL
+};
+
 static void print_cell_string(const char *value, int width) {
     /* 긴 문자열 때문에 표가 옆으로 밀리지 않도록 width를 넘으면 마지막에 ~를 붙여 자릅니다. */
     int len = (int)strlen(value);
@@ -210,8 +214,7 @@ static void print_projection_separator(const int *widths, int column_count) {
 }
 
 void print_record_table(Record **rows, int count, double elapsed, const char *access, const char *index_name) {
-    ColumnId all_columns[] = {COL_ID, COL_NAME, COL_AGE, COL_EMAIL};
-    print_record_table_columns(rows, count, elapsed, access, index_name, all_columns, MAX_COLUMNS);
+    print_record_table_columns(rows, count, elapsed, access, index_name, DEFAULT_SELECT_COLUMNS, MAX_COLUMNS);
 }
 
 void print_record_table_columns(Record **rows, int count, double elapsed,
@@ -220,10 +223,9 @@ void print_record_table_columns(Record **rows, int count, double elapsed,
     /*
      * SELECT 결과를 MySQL 스타일 표로 출력합니다.
      * 출력 전 모든 row를 훑어 컬럼 폭을 계산하므로 값 길이가 달라도 표가 크게 깨지지 않습니다.
-     */
+    */
     if (!columns || column_count <= 0) {
-        ColumnId all_columns[] = {COL_ID, COL_NAME, COL_AGE, COL_EMAIL};
-        columns = all_columns;
+        columns = DEFAULT_SELECT_COLUMNS;
         column_count = MAX_COLUMNS;
     }
     if (count == 0) {
