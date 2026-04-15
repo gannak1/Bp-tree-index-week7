@@ -1,1 +1,1 @@
-INSERT INTO school.users VALUES (1, 'Kim', 20);
+INSERT INTO school.users VALUES ('Kim', 20);

@@ -2,7 +2,7 @@ CC=gcc
 CFLAGS=-std=c11 -Wall -Wextra -pedantic -Isrc
 TARGET=sql_processor
 
-SRCS=src/main.c src/lexer.c src/parser.c src/meta.c src/storage.c src/executor.c src/util.c
+SRCS=src/main.c src/lexer.c src/parser.c src/meta.c src/storage.c src/executor.c src/util.c src/bptree.c
 OBJS=$(SRCS:.c=.o)
 
 all: $(TARGET)

@@ -65,6 +65,47 @@ static ASTNode *parse_value_node(Parser *parser, Status *status) {
     return node;
 }
 
+/* BETWEEN lower AND upper 를 BETWEEN 노드 아래 자식 둘로 만든다. */
+static ASTNode *parse_between_node(Parser *parser, Status *status) {
+    ASTNode *between_node;
+    ASTNode *lower_node;
+    ASTNode *upper_node;
+
+    if (!expect(parser, TOKEN_KEYWORD_BETWEEN, status, "Parse error: expected BETWEEN")) {
+        return NULL;
+    }
+
+    lower_node = parse_value_node(parser, status);
+    if (lower_node == NULL) {
+        snprintf(status->message, sizeof(status->message), "Parse error: expected BETWEEN lower bound");
+        return NULL;
+    }
+
+    if (!expect(parser, TOKEN_KEYWORD_AND, status, "Parse error: expected AND in BETWEEN clause")) {
+        free_ast(lower_node);
+        return NULL;
+    }
+
+    upper_node = parse_value_node(parser, status);
+    if (upper_node == NULL) {
+        free_ast(lower_node);
+        snprintf(status->message, sizeof(status->message), "Parse error: expected BETWEEN upper bound");
+        return NULL;
+    }
+
+    between_node = create_ast_node(NODE_BETWEEN, NULL, AST_VALUE_NONE);
+    if (between_node == NULL) {
+        free_ast(lower_node);
+        free_ast(upper_node);
+        snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
+        return NULL;
+    }
+
+    append_child(between_node, lower_node);
+    append_child(between_node, upper_node);
+    return between_node;
+}
+
 /* 현재 토큰이 비교 연산자면 해당 연산자 문자열을 반환한다. */
 static const char *parse_operator_text(Parser *parser, Status *status) {
     const Token *token = current_token(parser);
@@ -177,12 +218,13 @@ static ASTNode *parse_column_list_node(Parser *parser, Status *status) {
     return list_node;
 }
 
-/* WHERE column op value 를 WHERE 노드로 만든다. */
+/* WHERE column op value 또는 WHERE column BETWEEN low AND high 를 만든다. */
 static ASTNode *parse_where_node(Parser *parser, Status *status) {
     ASTNode *where_node;
     ASTNode *column_node;
-    ASTNode *operator_node;
-    ASTNode *value_node;
+    ASTNode *operator_node = NULL;
+    ASTNode *value_node = NULL;
+    ASTNode *between_node = NULL;
     char *column_name;
     const char *operator_text;
     
@@ -191,32 +233,48 @@ static ASTNode *parse_where_node(Parser *parser, Status *status) {
         return NULL;
     }
 
-    operator_text = parse_operator_text(parser, status);
-    if (operator_text == NULL) {
-        free(column_name);
-        return NULL;
-    }
-
-    value_node = parse_value_node(parser, status);
-    if (value_node == NULL) {
-        free(column_name);
-        return NULL;
-    }
-
     where_node = create_ast_node(NODE_WHERE, NULL, AST_VALUE_NONE);
     column_node = create_ast_node(NODE_COLUMN, column_name, AST_VALUE_NONE);
-    operator_node = create_ast_node(NODE_OPERATOR, operator_text, AST_VALUE_NONE);
     free(column_name);
-    if (where_node == NULL || column_node == NULL || operator_node == NULL) {
+    if (where_node == NULL || column_node == NULL) {
         free_ast(where_node);
         free_ast(column_node);
-        free_ast(operator_node);
-        free_ast(value_node);
         snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
         return NULL;
     }
 
     append_child(where_node, column_node);
+
+    if (current_token(parser)->type == TOKEN_KEYWORD_BETWEEN) {
+        between_node = parse_between_node(parser, status);
+        if (between_node == NULL) {
+            free_ast(where_node);
+            return NULL;
+        }
+        append_child(where_node, between_node);
+        return where_node;
+    }
+
+    operator_text = parse_operator_text(parser, status);
+    if (operator_text == NULL) {
+        free_ast(where_node);
+        return NULL;
+    }
+
+    value_node = parse_value_node(parser, status);
+    if (value_node == NULL) {
+        free_ast(where_node);
+        return NULL;
+    }
+
+    operator_node = create_ast_node(NODE_OPERATOR, operator_text, AST_VALUE_NONE);
+    if (operator_node == NULL) {
+        free_ast(where_node);
+        free_ast(value_node);
+        snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
+        return NULL;
+    }
+
     append_child(where_node, operator_node);
     append_child(where_node, value_node);
     return where_node;

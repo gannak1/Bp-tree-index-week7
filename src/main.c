@@ -1,29 +1,6 @@
-﻿#include "sql_processor.h"
+#include "sql_processor.h"
 
 #include <string.h>
-
-/* SQL 파일 전체를 호출자가 준비한 버퍼로 읽어온다. */
-int read_file_text(const char *path, char *buffer, size_t buffer_size, Status *status) {
-    FILE *file;
-    size_t read_bytes;
-
-    file = fopen(path, "rb");
-    if (file == NULL) {
-        snprintf(status->message, sizeof(status->message), "Execution error: cannot open SQL file '%s'", path);
-        return 0;
-    }
-
-    read_bytes = fread(buffer, 1, buffer_size - 1, file);
-    if (ferror(file)) {
-        fclose(file);
-        snprintf(status->message, sizeof(status->message), "Execution error: failed to read SQL file '%s'", path);
-        return 0;
-    }
-
-    buffer[read_bytes] = '\0';
-    fclose(file);
-    return 1;
-}
 
 /* lexer -> parser(AST 생성) -> executor 순서로 SQL 한 문장을 실행한다. */
 static int run_sql(const char *sql_text) {
@@ -56,6 +33,37 @@ static int run_sql(const char *sql_text) {
     return 1;
 }
 
+/* 파일에서 SQL을 한 줄씩 읽어 여러 문장을 순서대로 실행한다. */
+static int run_sql_file(const char *path) {
+    FILE *file;
+    char sql_text[MAX_SQL_TEXT];
+    int all_ok = 1;
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Execution error: cannot open SQL file '%s'\n", path);
+        return 0;
+    }
+
+    while (fgets(sql_text, sizeof(sql_text), file) != NULL) {
+        char *trimmed;
+
+        sql_text[strcspn(sql_text, "\r\n")] = '\0';
+        trimmed = trim_whitespace(sql_text);
+        if (trimmed[0] == '\0') {
+            continue;
+        }
+
+        if (!run_sql(trimmed)) {
+            all_ok = 0;
+            break;
+        }
+    }
+
+    fclose(file);
+    return all_ok;
+}
+
 /* REPL 모드에서 한 줄씩 SQL을 입력받아 반복 실행한다. */
 static int run_repl(void) {
     char input[MAX_SQL_TEXT];
@@ -83,9 +91,6 @@ static int run_repl(void) {
 
 /* 프로그램 진입점이다. 파일 실행 모드와 REPL 모드를 지원한다. */
 int main(int argc, char **argv) {
-    char sql_text[MAX_SQL_TEXT];
-    Status status;
-
     if (argc != 2) {
         fprintf(stderr, "Usage: sql_processor <sql-file> | sql_processor --repl\n");
         return 1;
@@ -95,10 +100,5 @@ int main(int argc, char **argv) {
         return run_repl();
     }
 
-    if (!read_file_text(argv[1], sql_text, sizeof(sql_text), &status)) {
-        fprintf(stderr, "%s\n", status.message);
-        return 1;
-    }
-
-    return run_sql(sql_text) ? 0 : 1;
+    return run_sql_file(argv[1]) ? 0 : 1;
 }

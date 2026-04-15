@@ -36,6 +36,8 @@ static TokenType keyword_type(const char *text) {
     if (equals_ignore_case(text, "SELECT")) return TOKEN_KEYWORD_SELECT;
     if (equals_ignore_case(text, "FROM")) return TOKEN_KEYWORD_FROM;
     if (equals_ignore_case(text, "WHERE")) return TOKEN_KEYWORD_WHERE;
+    if (equals_ignore_case(text, "BETWEEN")) return TOKEN_KEYWORD_BETWEEN;
+    if (equals_ignore_case(text, "AND")) return TOKEN_KEYWORD_AND;
     return TOKEN_IDENTIFIER;
 }
 
