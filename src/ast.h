@@ -21,15 +21,35 @@ typedef enum {
     AST_LOAD_SCHEMA,
     AST_LOAD_DATA_BINARY,
     AST_BENCHMARK,
-    AST_UNSUPPORTED
+    AST_UNSUPPORTED,
+    AST_TABLE,
+    AST_SELECT_LIST,
+    AST_COLUMN_LIST,
+    AST_VALUE_LIST,
+    AST_WHERE,
+    AST_CONDITION,
+    AST_INDEX_HINT,
+    AST_PATH,
+    AST_BENCHMARK_OPTIONS
 } AstKind;
+
+typedef struct AstNode {
+    AstKind kind;
+    char text[AST_SQL_MAX];
+    int start;
+    int length;
+    struct AstNode *first_child;
+    struct AstNode *next_sibling;
+} AstNode;
 
 typedef struct {
     AstKind kind;
     char sql[AST_SQL_MAX];
+    AstNode *root;
 } SqlAst;
 
 bool sql_ast_parse(const char *input, SqlAst *ast, char *err, size_t err_size);
+void sql_ast_free(SqlAst *ast);
 const char *sql_ast_kind_name(AstKind kind);
 
 #endif

@@ -827,7 +827,7 @@ static ExecStatus execute_benchmark(Database *db, const char *sql, double begin)
 ExecStatus execute_command(Database *db, const char *input) {
     /*
      * 모든 SQL 실행의 입구입니다.
-     * ast.c가 SQL을 AstKind로 분류하면, switch문이 알맞은 실행 함수로 전달합니다.
+     * ast.c가 SQL을 AstNode 트리로 만들고, root node의 kind로 알맞은 실행 함수에 전달합니다.
      */
     double begin = now_sec();
     SqlAst ast;
@@ -836,40 +836,59 @@ ExecStatus execute_command(Database *db, const char *input) {
         print_error_timed("Syntax Error", ast_err, input ? input : "", 0, 1, begin);
         return EXEC_ERROR;
     }
-    if (ast.kind == AST_EMPTY) {
+    AstKind command_kind = ast.root ? ast.root->kind : ast.kind;
+    if (command_kind == AST_EMPTY) {
+        sql_ast_free(&ast);
         return EXEC_OK;
     }
-    switch (ast.kind) {
+    ExecStatus status = EXEC_OK;
+    switch (command_kind) {
         case AST_EXIT:
             execute_save(db, begin);
-            return EXEC_EXIT;
+            status = EXEC_EXIT;
+            break;
         case AST_INSERT:
-            return execute_insert(db, ast.sql, begin);
+            status = execute_insert(db, ast.sql, begin);
+            break;
         case AST_EXPLAIN:
-            return execute_select(db, ast.sql, begin, true);
+            status = execute_select(db, ast.sql, begin, true);
+            break;
         case AST_SELECT:
-            return execute_select(db, ast.sql, begin, false);
+            status = execute_select(db, ast.sql, begin, false);
+            break;
         case AST_SHOW_INDEX:
-            return execute_show_index(db, begin);
+            status = execute_show_index(db, begin);
+            break;
         case AST_CREATE_UNIQUE_INDEX:
-            return execute_create_index(db, ast.sql, begin, true);
+            status = execute_create_index(db, ast.sql, begin, true);
+            break;
         case AST_CREATE_INDEX:
-            return execute_create_index(db, ast.sql, begin, false);
+            status = execute_create_index(db, ast.sql, begin, false);
+            break;
         case AST_DROP_INDEX:
-            return execute_drop_index(db, ast.sql, begin);
+            status = execute_drop_index(db, ast.sql, begin);
+            break;
         case AST_ALTER_PRIMARY_KEY:
-            return execute_alter_primary(db, ast.sql, begin);
+            status = execute_alter_primary(db, ast.sql, begin);
+            break;
         case AST_SAVE:
-            return execute_save(db, begin);
+            status = execute_save(db, begin);
+            break;
         case AST_LOAD_SCHEMA:
-            return execute_load_schema(db, ast.sql, begin);
+            status = execute_load_schema(db, ast.sql, begin);
+            break;
         case AST_LOAD_DATA_BINARY:
-            return execute_load_data_binary(db, ast.sql, begin);
+            status = execute_load_data_binary(db, ast.sql, begin);
+            break;
         case AST_BENCHMARK:
-            return execute_benchmark(db, ast.sql, begin);
+            status = execute_benchmark(db, ast.sql, begin);
+            break;
         case AST_UNSUPPORTED:
         default:
             print_error_timed("Syntax Error", "Unsupported command.", ast.sql, 0, 1, begin);
-            return EXEC_ERROR;
+            status = EXEC_ERROR;
+            break;
     }
+    sql_ast_free(&ast);
+    return status;
 }

@@ -2,7 +2,7 @@
 
 역할:
 
-- 입력 SQL을 정리하고 명령 종류를 판별합니다.
+- 입력 SQL을 정리하고 AST 노드 트리를 생성합니다.
 - 대소문자를 구분하지 않고 `SELECT`, `INSERT`, `CREATE INDEX` 등을 인식합니다.
 
 수도코드:
@@ -41,58 +41,56 @@
 
     만약 ast.sql이 비어 있다면:
         ast.kind = EMPTY
+        ast.root = AST_EMPTY node
         true 반환
 
-    만약 ast.sql이 "EXIT" 또는 "QUIT"라면:
-        ast.kind = EXIT
-    아니고 "INSERT"로 시작하면:
-        ast.kind = INSERT
-    아니고 "EXPLAIN"으로 시작하면:
-        ast.kind = EXPLAIN
-    아니고 "SELECT"로 시작하면:
-        ast.kind = SELECT
-    아니고 "SHOW INDEX"로 시작하면:
-        ast.kind = SHOW_INDEX
-    아니고 "CREATE UNIQUE INDEX"로 시작하면:
-        ast.kind = CREATE_UNIQUE_INDEX
-    아니고 "CREATE INDEX"로 시작하면:
-        ast.kind = CREATE_INDEX
-    아니고 "DROP INDEX"로 시작하면:
-        ast.kind = DROP_INDEX
-    아니고 "ALTER TABLE"이며 "MODIFY PRIMARY KEY"를 포함하면:
-        ast.kind = ALTER_PRIMARY_KEY
-    아니고 "SAVE"라면:
-        ast.kind = SAVE
-    아니고 "LOAD SCHEMA"로 시작하면:
-        ast.kind = LOAD_SCHEMA
-    아니고 "LOAD DATA BINARY"로 시작하면:
-        ast.kind = LOAD_DATA_BINARY
-    아니고 "BENCHMARK"로 시작하면:
-        ast.kind = BENCHMARK
-    그 외:
-        ast.kind = UNSUPPORTED
+    classify_command(ast.sql)로 root kind 결정
+    ast.root = AstNode(kind=ast.kind, text=ast.sql)
+
+    명령 종류에 따라 자식 노드 생성:
+        SELECT:
+            SELECT_LIST
+            TABLE
+            INDEX_HINT
+            WHERE
+                CONDITION
+
+        INSERT:
+            TABLE
+            COLUMN_LIST
+            VALUE_LIST
+
+        CREATE INDEX:
+            TABLE
+            COLUMN_LIST
+
+        LOAD:
+            PATH
+
+        BENCHMARK:
+            BENCHMARK_OPTIONS
 
     true 반환
 ```
 
 이해 포인트:
 
-- AST 단계에서는 명령의 큰 종류만 판별합니다.
-- 세부 문법 오류는 각 executor가 더 정확한 위치와 함께 출력합니다.
+- AST 단계에서는 명령 root와 주요 SQL 구성 요소를 노드로 만듭니다.
+- 세부 타입 검사와 실행 오류는 각 executor/query 모듈이 더 정확한 위치와 함께 출력합니다.
 - 대소문자 무시 비교를 직접 구현해서 `select`, `SELECT`, `SeLeCt` 모두 처리합니다.
 
 ## 더 자세한 설계 설명
 
-현재 프로젝트의 AST는 일반적인 컴파일러처럼 완전한 트리 구조를 만들지는 않습니다.
-대신 SQL을 먼저 “명령 종류” 단위로 분류합니다.
+현재 프로젝트의 AST는 SQL 명령과 핵심 구성 요소를 트리로 표현합니다.
+다만 JOIN, GROUP BY, 복잡한 AND/OR 표현식까지 모두 다루는 범용 SQL AST는 아닙니다.
 
 이렇게 한 이유:
 
 ```text
 1. 과제 핵심은 SQL 전체 문법 구현이 아니라 B+Tree 인덱스 연결이다.
 2. 그래도 문자열 if문이 executor 전체에 흩어지면 유지보수가 어렵다.
-3. 그래서 입력 SQL을 한 번 정리하고 AstKind로 분류하는 얇은 AST 계층을 둔다.
-4. 세부 문법은 각 명령 executor가 자신에게 필요한 범위만 파싱한다.
+3. 그래서 입력 SQL을 한 번 정리하고 AstNode 트리를 만든다.
+4. executor는 root kind로 실행 함수를 고르고, 필요하면 기존 세부 파서를 재사용한다.
 ```
 
 ## sql_ast_parse()의 에러 처리
@@ -109,6 +107,7 @@
 
 지원하지 않는 명령인 경우:
     UNSUPPORTED로 분류한다.
+    root node도 AST_UNSUPPORTED로 만든다.
     실제 에러 출력은 execute_command()가 담당한다.
 ```
 
@@ -129,12 +128,40 @@
 
 ```text
 SqlAst:
-    SELECT인지 INSERT인지 같은 큰 명령 종류를 저장한다.
+    root node를 통해 SELECT/INSERT/WHERE/CONDITION 같은 SQL 구조를 저장한다.
 
 QueryCondition:
-    WHERE id BETWEEN 1 AND 10 같은 조건 자체를 저장한다.
+    WHERE 조건을 실제 비교 가능한 lower/upper key 구조로 바꾼다.
 
 즉:
-    SqlAst는 명령 레벨 AST
-    QueryCondition은 WHERE 조건 레벨 AST
+    SqlAst/AstNode는 SQL 문법 구조 AST
+    QueryCondition은 실행용 조건 표현
+```
+
+## SELECT AST 예시
+
+```text
+SQL:
+    SELECT * FROM users FORCE INDEX (PRIMARY) WHERE id BETWEEN 1 AND 10;
+
+AstNode tree:
+    AST_SELECT text="SELECT * FROM users FORCE INDEX (PRIMARY) WHERE id BETWEEN 1 AND 10"
+        AST_SELECT_LIST text="*"
+        AST_TABLE text="users"
+        AST_INDEX_HINT text="FORCE PRIMARY"
+        AST_WHERE text="WHERE id BETWEEN 1 AND 10"
+            AST_CONDITION text="id BETWEEN 1 AND 10"
+```
+
+## INSERT AST 예시
+
+```text
+SQL:
+    INSERT INTO users (name, age, email) VALUES ('kim', 20, 'kim@test.com');
+
+AstNode tree:
+    AST_INSERT
+        AST_TABLE "users"
+        AST_COLUMN_LIST "name, age, email"
+        AST_VALUE_LIST "'kim', 20, 'kim@test.com'"
 ```

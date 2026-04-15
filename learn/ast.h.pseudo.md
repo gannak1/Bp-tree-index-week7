@@ -2,8 +2,8 @@
 
 역할:
 
-- SQL 명령을 어떤 종류로 분류할지 나타내는 AST 타입을 정의합니다.
-- 여기서의 AST는 복잡한 트리 전체가 아니라, 현재 프로젝트 범위에 맞춘 “명령 단위 AST”입니다.
+- SQL을 트리 형태로 표현하기 위한 AST 타입을 정의합니다.
+- 루트 노드는 `SELECT`, `INSERT`, `CREATE INDEX` 같은 명령을 나타내고, 자식 노드는 `TABLE`, `WHERE`, `CONDITION`, `COLUMN_LIST`, `VALUE_LIST`, `INDEX_HINT` 같은 SQL 구성 요소를 나타냅니다.
 
 수도코드:
 
@@ -27,20 +27,53 @@ enum AstKind:
     LOAD_DATA_BINARY
     BENCHMARK
     UNSUPPORTED
+    TABLE
+    SELECT_LIST
+    COLUMN_LIST
+    VALUE_LIST
+    WHERE
+    CONDITION
+    INDEX_HINT
+    PATH
+    BENCHMARK_OPTIONS
+```
+
+```text
+구조체 AstNode:
+    kind
+        // 이 노드가 어떤 SQL 요소인지 나타냄
+
+    text
+        // 노드가 담당하는 SQL 조각
+
+    start, length
+        // 원본 SQL에서 이 노드가 차지한 위치
+
+    first_child
+        // 첫 번째 자식 노드
+
+    next_sibling
+        // 같은 부모를 가진 다음 형제 노드
 ```
 
 ```text
 구조체 SqlAst:
     kind
-        // SQL 명령 종류
+        // root->kind를 빠르게 접근하기 위한 명령 종류
 
     sql
         // 세미콜론과 앞뒤 공백을 정리한 SQL 문자열
+
+    root
+        // 실제 AST 트리의 루트 노드
 ```
 
 ```text
 함수 sql_ast_parse(input, ast, err, err_size) -> bool
-    // 입력 SQL을 SqlAst로 변환
+    // 입력 SQL을 AstNode 트리로 변환
+
+함수 sql_ast_free(ast)
+    // AST 노드 트리 전체 메모리 해제
 
 함수 sql_ast_kind_name(kind) -> 문자열
     // 디버깅용 AST 종류 이름 반환
@@ -48,8 +81,9 @@ enum AstKind:
 
 이해 포인트:
 
-- `executor.c`는 원본 문자열을 바로 분기하지 않고 `SqlAst.kind`를 보고 실행합니다.
-- WHERE 조건의 세부 구조는 `query.c`의 `QueryCondition`이 추가로 담당합니다.
+- `executor.c`는 `ast.root->kind`를 보고 실행 함수를 선택합니다.
+- `SELECT`, `INSERT`, `CREATE INDEX` 같은 명령은 자식 노드로 주요 SQL 조각을 가집니다.
+- WHERE 조건은 AST에서 `AST_WHERE -> AST_CONDITION`으로 표현되고, 실제 타입 체크와 범위 조건 변환은 `query.c`의 `QueryCondition`이 추가로 담당합니다.
 
 ## AstKind를 enum으로 둔 이유
 
@@ -87,22 +121,45 @@ SqlAst.sql:
     앞뒤 공백 제거
     마지막 세미콜론 제거
 
+SqlAst.root:
+    실제 AST root node
+    예: root.kind = AST_SELECT
+    root.first_child = AST_SELECT_LIST
+
 왜 원본 SQL도 보관하는가:
     executor는 세부 파싱을 위해 SQL 문자열이 필요하다.
     예를 들어 SELECT라면 WHERE 뒤 조건을 다시 읽어야 한다.
 ```
 
-## 현재 AST의 한계
+## AST 예시
 
 ```text
-현재 구현은 과제 목적에 맞춘 단순 AST다.
+SQL:
+    SELECT * FROM users FORCE INDEX (PRIMARY) WHERE id BETWEEN 1 AND 10;
 
-지원하는 것:
-    명령 종류 분류
-    SQL 문자열 정리
+AST:
+    AST_SELECT
+        AST_SELECT_LIST "*"
+        AST_TABLE "users"
+        AST_INDEX_HINT "FORCE PRIMARY"
+        AST_WHERE "id BETWEEN 1 AND 10"
+            AST_CONDITION "id BETWEEN 1 AND 10"
+```
 
-지원하지 않는 것:
-    SELECT column list 전체 트리화
+## 현재 AST의 범위
+
+```text
+구현한 것:
+    명령 root node
+    SELECT list node
+    table node
+    WHERE/CONDITION node
+    INSERT column/value list node
+    CREATE INDEX column node
+    LOAD path node
+    BENCHMARK option node
+
+아직 구현하지 않은 것:
     JOIN
     GROUP BY
     복잡한 논리식 AND/OR
@@ -110,5 +167,5 @@ SqlAst.sql:
 하지만 B+Tree 인덱스 과제에서 필요한:
     WHERE column operator value
     WHERE column BETWEEN value AND value
-는 query.c의 QueryCondition으로 별도 처리한다.
+는 AST와 QueryCondition 조합으로 처리한다.
 ```

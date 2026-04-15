@@ -48,13 +48,13 @@ SELECT * FROM users FORCE INDEX (PRIMARY) WHERE id BETWEEN 100 AND 200;
 2. executor.c
    execute_command()
      // ast.c의 sql_ast_parse()를 호출한다.
-     // AST 결과가 AST_SELECT인지 확인한다.
+     // AST root node가 AST_SELECT인지 확인한다.
      // SELECT라면 execute_select()로 넘긴다.
 
 3. ast.c
    sql_ast_parse()
-     // SQL 앞부분을 보고 SELECT 명령이라는 사실만 분류한다.
-     // 세부 WHERE 조건은 여기서 파싱하지 않는다.
+     // AST_SELECT root node를 만든다.
+     // SELECT_LIST, TABLE, INDEX_HINT, WHERE, CONDITION 자식 노드를 붙인다.
 
 4. executor.c
    execute_select()

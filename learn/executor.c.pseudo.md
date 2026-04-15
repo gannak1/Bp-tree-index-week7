@@ -2,7 +2,7 @@
 
 역할:
 
-- AST가 분류한 SQL 명령을 실제로 실행합니다.
+- AST가 만든 root node의 명령 종류를 실제 DB 동작으로 실행합니다.
 - INSERT, SELECT, CREATE INDEX, ALTER PRIMARY KEY, LOAD, SAVE, BENCHMARK를 담당합니다.
 
 명령 분기:
@@ -12,12 +12,15 @@
     begin = 현재 시간
 
     ast = sql_ast_parse(input)
-        // ast.c에서 명령 종류 분류
+        // ast.c에서 AstNode 트리 생성
 
-    만약 ast가 EMPTY라면:
+    command_kind = ast.root.kind
+
+    만약 command_kind가 EMPTY라면:
+        AST 메모리 해제
         EXEC_OK 반환
 
-    ast.kind에 따라 실행:
+    command_kind에 따라 실행:
         EXIT:
             저장 후 EXEC_EXIT 반환
 
@@ -59,6 +62,9 @@
 
         그 외:
             Syntax Error 출력
+
+    sql_ast_free(ast)
+        // AST 노드 트리 메모리 해제
 ```
 
 INSERT 실행:
