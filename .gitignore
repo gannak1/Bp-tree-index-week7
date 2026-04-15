@@ -1,0 +1,8 @@
+mysql_bptree
+data/*.tmp
+data/users.schema.csv
+data/users.indexes.csv
+data/users.data
+data/users.meta
+!data/.gitkeep
+
