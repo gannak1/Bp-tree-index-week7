@@ -1,75 +1,45 @@
 # SQLInsertSelect
 
-SQL 문자열을 `Lexer -> Parser -> Executor` 흐름으로 처리하고, 메타정보는 CSV 파일로, 데이터는 바이너리 파일로 저장합니다.
+파일 기반 미니 SQL 처리기입니다.  
+기존의 `lexer -> parser -> AST -> executor -> binary storage` 구조를 유지하면서, 최근 버전에서는 아래 기능을 지원합니다.
 
-![alt text](image.png)
-----------------------▼28Byte
-![alt text](image-1.png)
+- `id` 자동 증가
+- 메모리 기반 B+ 트리 인덱스
+- `WHERE id = ?` 인덱스 탐색
+- 그 외 조건의 선형 탐색
+- `BETWEEN` 지원
+- 대량 데이터 생성기
+- 쿼리 실행 시간 로그
 
-```csv
-1,Kim,20
-...
-4,mkm,257
-...
-```
+## 1. 프로젝트 핵심 개념
 
-## 지원 기능
-
-현재 지원하는 SQL은 아래와 같습니다.
-
-- `INSERT INTO users VALUES (1, 'Kim', 20);`
-- `INSERT INTO school.users VALUES (1, 'Kim', 20);`
-- `SELECT * FROM users;`
-- `SELECT * FROM school.users;`
-- `SELECT name FROM users;`
-- `SELECT name FROM users WHERE id = 1;`
-- `SELECT * FROM users WHERE age >= 10;`
-
-현재 `WHERE`는 단일 조건만 지원합니다.
-
-- `=`
-- `!=`
-- `>`
-- `>=`
-- `<`
-- `<=`
-
-## 디렉터리 구조
+이 프로젝트는 실제 DBMS처럼 SQL 문자열을 바로 실행하지 않습니다.  
+대신 아래 순서로 처리합니다.
 
 ```text
-SQLInsertSelect/
-├── AGENT.md
-├── Makefile
-├── README.md
-├── meta/
-│   └── school/
-│       └── users.schema.csv
-├── data/
-│   └── school/
-│       └── users.dat
-├── sample_insert.sql
-├── sample_select.sql
-├── sample_where.sql
-├── sample_where_ge.sql
-├── sample_where_ne.sql
-└── src/
-    ├── main.c
-    ├── lexer.c
-    ├── parser.c
-    ├── meta.c
-    ├── storage.c
-    ├── executor.c
-    ├── util.c
-    └── sql_processor.h
+SQL 문자열
+-> 토큰(Token)
+-> AST(Abstract Syntax Tree)
+-> 실행기(Executor)
+-> 메타/데이터 파일 접근
+-> 결과 출력
 ```
 
-## 저장 구조
+실제 저장소는 두 부분으로 나뉩니다.
 
-### 1. 메타 파일
+- 메타 파일: `meta/<schema>/<table>.schema.csv`
+- 데이터 파일: `data/<schema>/<table>.dat`
 
-메타 파일은 `meta/<schema>/<table>.schema.csv` 위치에 있습니다.
+예를 들어 `school.users` 테이블은 아래 두 파일을 사용합니다.
 
-예: [users.schema.csv](C:\crafton\1\SQLInsertSelect\meta\school\users.schema.csv)
+- `meta/school/users.schema.csv`
+- `data/school/users.dat`
+
+## 2. 저장 구조
+
+### 2.1 메타 파일
+
+예시:
 
 ```csv
 column_name,type,size
@@ -80,214 +50,134 @@ age,INT,4
 
 의미:
 
-- `id`는 4바이트 정수
-- `name`은 20바이트 고정 길이 문자열
-- `age`는 4바이트 정수
+- `id`: 4바이트 정수
+- `name`: 20바이트 고정 길이 문자열
+- `age`: 4바이트 정수
 
-### 2. 데이터 파일
+### 2.2 바이너리 데이터 파일
 
-실제 데이터는 `data/<schema>/<table>.dat` 바이너리 파일에 저장합니다.
-
-예: [users.dat](C:\crafton\1\SQLInsertSelect\data\school\users.dat)
-
-현재 `users` 테이블의 row 구조는 아래와 같습니다.
-
-- `id`: 4바이트
-- `name`: 20바이트
-- `age`: 4바이트
-
-즉 row 하나 크기는 총 28바이트입니다.
+`users` 한 row는 아래 순서로 저장됩니다.
 
 ```text
 [id 4바이트][name 20바이트][age 4바이트]
 ```
 
-데이터 파일에는 row가 연속으로 저장됩니다.
+즉 row 하나의 크기는 `28`바이트입니다.
 
-```text
-[row1 28바이트][row2 28바이트][row3 28바이트]...
-```
+## 3. 전체 실행 흐름
 
-### TableMeta
-
-메타 CSV를 읽은 뒤 실행기에 전달되는 구조입니다.
-
-```c
-typedef struct {
-    char schema_name[MAX_NAME_LEN];
-    char table_name[MAX_NAME_LEN];
-    ColumnDef columns[MAX_COLUMNS];
-    int column_count;
-    int row_size;
-    char data_file_path[MAX_PATH_LEN];
-    char meta_file_path[MAX_PATH_LEN];
-} TableMeta;
-```
-각 필드 의미:
-
-- `type`: 노드 종류 (`NODE_SELECT`, `NODE_INSERT`, `NODE_TABLE` 등)
-- `value_type`: 값 노드의 literal 종류 (`문자열`, `숫자`, `없음`)
-- `text`: 컬럼명, 테이블명, 실제 값, 연산자 문자열
-- `first_child`: 첫 번째 자식 노드
-- `next_sibling`: 같은 부모의 다음 형제 노드
-## 전체 실행 흐름
-
-전체 흐름은 아래 순서입니다.
-
-```text
-입력 SQL
--> lex_sql
--> parse_statement
--> AST 생성
--> execute_statement
--> load_table_meta
--> append_binary_row / execute_select
--> 결과 출력
-```
-
-### INSERT 흐름
-
-예:
-
-```sql
-INSERT INTO users VALUES (1, 'Kim', 20);
-```
-
-처리 순서:
-
-1. `lex_sql()`이 SQL을 토큰 배열로 분리합니다.
-2. `parse_insert()`가 `NODE_INSERT` 루트를 만듭니다.
-3. `parse_table_node()`가 `TABLE -> schema/table` 구조를 만듭니다.
-4. `parse_value_list_node()`가 값 목록 노드를 만듭니다.
-5. `execute_statement()`가 메타 파일을 읽습니다.
-6. `append_binary_row()`가 value list를 순회하며 row 버퍼를 만듭니다.
-7. `fwrite()`로 `.dat` 파일 끝에 row를 추가합니다.
-
-### SELECT 흐름
-
-예:
-
-```sql
-SELECT name FROM users WHERE id = 1;
-```
-
-처리 순서:
-
-1. `lex_sql()`이 SQL을 토큰 배열로 분리합니다.
-2. `parse_select()`가 `NODE_SELECT` 루트를 만듭니다.
-3. `parse_column_list_node()`가 조회할 컬럼 목록을 만듭니다.
-4. `parse_table_node()`가 대상 테이블 노드를 만듭니다.
-5. `parse_where_node()`가 `WHERE` 노드를 만듭니다.
-6. `execute_statement()`가 메타 파일을 읽습니다.
-7. `execute_select()`가 `.dat` 파일을 `row_size` 단위로 읽습니다.
-8. `WHERE` 조건에 맞는 row만 출력합니다.
-
-## 내부 자료구조
-
-### ASTNode
-```c
-typedef enum {
-    TOKEN_IDENTIFIER,      /* 일반 이름: users, age, school */
-    TOKEN_STRING,          /* 문자열 literal: 'Kim' */
-    TOKEN_NUMBER,          /* 숫자 literal: 10, 123 */
-    TOKEN_STAR,            /* '*' */
-    TOKEN_COMMA,           /* ',' */
-    TOKEN_DOT,             /* '.' */
-    TOKEN_LPAREN,          /* '(' */
-    TOKEN_RPAREN,          /* ')' */
-    TOKEN_EQUAL,           /* '=' */
-    TOKEN_NOT_EQUAL,       /* '!=' */
-    TOKEN_GREATER,         /* '>' */
-    TOKEN_GREATER_EQUAL,   /* '>=' */
-    TOKEN_LESS,            /* '<' */
-    TOKEN_LESS_EQUAL,      /* '<=' */
-    TOKEN_SEMICOLON,       /* ';' */
-    TOKEN_EOF,             /* 입력 끝 */
-    TOKEN_KEYWORD_INSERT,  /* INSERT 키워드 */
-    TOKEN_KEYWORD_INTO,    /* INTO 키워드 */
-    TOKEN_KEYWORD_VALUES,  /* VALUES 키워드 */
-    TOKEN_KEYWORD_SELECT,  /* SELECT 키워드 */
-    TOKEN_KEYWORD_FROM,    /* FROM 키워드 */
-    TOKEN_KEYWORD_WHERE    /* WHERE 키워드 */
-} TokenType;
-```
-SQL의 명령어를 노드 기반 AST로 변환한 뒤 실행합니다.
-
-
-## 추상 구문 트리 (AST)
-- 구문 트리는 소스 트리가 문법에 맞는지 확인하는 데 사용된다. 소스 코드를 토큰화(tokenization)한 후, 파싱(parsing) 과정을 통해 생성
-- 특징
-  - 정확한 문법 구조를 보여주며, 소스 코드의 세부 문법 정보를 모두 포함한다.
-  - 프로그래밍 언어의 문법(Grammar) 규칙에 따라 트리 형태로 변환된다.
-  - 세미콜론, 괄호 등과 같은 문법적 세부 사항도 포함된다.
-
-## AST 예시
+아래는 SQL 한 줄이 실제로 실행되는 전체 흐름입니다.
 
 ```mermaid
 flowchart TD
-    ROOT[ROOT]
-
-    ROOT --> S[NODE_SELECT]
-    ROOT --> I[NODE_INSERT]
-
-    S --> SCL[NODE_COLUMN_LIST]
-    S --> STB[NODE_TABLE]
-    S --> SWH[NODE_WHERE]
-
-    SCL --> SC1["NODE_COLUMN: name"]
-
-    STB --> SSI["NODE_IDENTIFIER: school"]
-    STB --> STI["NODE_IDENTIFIER: users"]
-
-    SWH --> SWC["NODE_COLUMN: id"]
-    SWH --> SWO["NODE_OPERATOR: ="]
-    SWH --> SWV["NODE_VALUE: 1"]
-
-    I --> ITB[NODE_TABLE]
-    I --> IVL[NODE_VALUE_LIST]
-
-    ITB --> ISI["NODE_IDENTIFIER: school"]
-    ITB --> ITI["NODE_IDENTIFIER: users"]
-
-    IVL --> IV1["NODE_VALUE: 1"]
-    IVL --> IV2["NODE_VALUE: Kim"]
-    IVL --> IV3["NODE_VALUE: 20"]
-
+    A["SQL 입력"] --> B["lex_sql()"]
+    B --> C["TokenArray 생성"]
+    C --> D["parse_statement()"]
+    D --> E["AST 생성"]
+    E --> F["execute_statement()"]
+    F --> G["메타 로드"]
+    G --> H{"INSERT / SELECT 분기"}
+    H -->|INSERT| I["append_binary_row()"]
+    H -->|SELECT| J["execute_select()"]
+    I --> K[".dat 파일에 row 저장"]
+    J --> L["인덱스 탐색 또는 선형 탐색"]
+    K --> M["결과 출력"]
+    L --> M
 ```
 
+관련 파일:
 
+- `src/main.c`
+- `src/lexer.c`
+- `src/parser.c`
+- `src/executor.c`
+- `src/storage.c`
 
-```c
-typedef struct {
-    TokenType type;
-    char *text;
-} Token;
+## 4. 토큰화는 어떻게 하는가
+
+토큰화는 `src/lexer.c`의 `lex_sql()`가 담당합니다.  
+이 함수는 SQL 문자열을 왼쪽부터 한 글자씩 읽으면서 의미 단위로 잘라 `TokenArray`에 넣습니다.
+
+### 4.1 토큰 종류
+
+대표 토큰은 아래와 같습니다.
+
+- `TOKEN_IDENTIFIER`
+- `TOKEN_STRING`
+- `TOKEN_NUMBER`
+- `TOKEN_STAR`
+- `TOKEN_COMMA`
+- `TOKEN_DOT`
+- `TOKEN_LPAREN`
+- `TOKEN_RPAREN`
+- `TOKEN_EQUAL`
+- `TOKEN_NOT_EQUAL`
+- `TOKEN_GREATER`
+- `TOKEN_GREATER_EQUAL`
+- `TOKEN_LESS`
+- `TOKEN_LESS_EQUAL`
+- `TOKEN_KEYWORD_SELECT`
+- `TOKEN_KEYWORD_INSERT`
+- `TOKEN_KEYWORD_WHERE`
+- `TOKEN_KEYWORD_BETWEEN`
+- `TOKEN_KEYWORD_AND`
+
+중요한 점은:
+
+- `school`, `users`, `age`, `name`는 전부 lexer 단계에서는 `TOKEN_IDENTIFIER`
+- `SELECT`, `INSERT`, `WHERE`, `BETWEEN`, `AND`는 키워드 토큰
+- 실제로 schema인지 table인지 column인지는 parser가 문맥으로 판단
+
+### 4.2 토큰화 flowchart
+
+```mermaid
+flowchart TD
+    A["현재 문자 cursor 확인"] --> B{"공백인가?"}
+    B -->|예| C["건너뛰고 다음 문자"]
+    B -->|아니오| D{"구두점/연산자인가?"}
+    D -->|예| E["해당 TokenType으로 push"]
+    D -->|아니오| F{"작은따옴표 문자열인가?"}
+    F -->|예| G["문자열 끝까지 읽고 TOKEN_STRING 생성"]
+    F -->|아니오| H{"숫자인가?"}
+    H -->|예| I["숫자 끝까지 읽고 TOKEN_NUMBER 생성"]
+    H -->|아니오| J{"문자 또는 _ 로 시작하는가?"}
+    J -->|예| K["식별자 끝까지 읽음"]
+    K --> L{"예약어인가?"}
+    L -->|예| M["키워드 토큰 생성"]
+    L -->|아니오| N["TOKEN_IDENTIFIER 생성"]
+    J -->|아니오| O["Lexer error"]
 ```
-```c
-typedef struct {
-    Token *items;
-    int count;
-} TokenArray;
+
+### 4.3 예시
+
+입력:
+
+```sql
+SELECT name FROM users WHERE age BETWEEN 20 AND 30;
 ```
-['S','E','L','E','C','T','','U','S','E',]
-    ▲cursor
-- lexer
-```c
-if (*cursor == '*' || *cursor == ',' || *cursor == '.' || *cursor == '(' || *cursor == ')' || *cursor == ';') {
-    TokenType type = TOKEN_STAR;
-    switch (*cursor) {
-    case '*': type = TOKEN_STAR; break;
-    case ',': type = TOKEN_COMMA; break;
-    case '.': type = TOKEN_DOT; break;
-    case '(': type = TOKEN_LPAREN; break;
-    case ')': type = TOKEN_RPAREN; break;
-    case ';': type = TOKEN_SEMICOLON; break;
-    }
-    if (!push_token(&array, type, cursor, 1)) goto oom;
-    cursor++;
-    continue;
-}
+
+토큰 결과:
+
+```text
+TOKEN_KEYWORD_SELECT   "SELECT"
+TOKEN_IDENTIFIER       "name"
+TOKEN_KEYWORD_FROM     "FROM"
+TOKEN_IDENTIFIER       "users"
+TOKEN_KEYWORD_WHERE    "WHERE"
+TOKEN_IDENTIFIER       "age"
+TOKEN_KEYWORD_BETWEEN  "BETWEEN"
+TOKEN_NUMBER           "20"
+TOKEN_KEYWORD_AND      "AND"
+TOKEN_NUMBER           "30"
+TOKEN_SEMICOLON        ";"
+TOKEN_EOF              ""
 ```
+
+## 5. AST를 어떻게 쓰는가
+
+이 프로젝트는 파싱 결과를 단순 구조체가 아니라 **노드 기반 AST**로 표현합니다.
+
+기본 노드 구조는 아래와 같습니다.
 
 ```c
 typedef struct ASTNode {
@@ -298,68 +188,62 @@ typedef struct ASTNode {
     struct ASTNode *next_sibling;
 } ASTNode;
 ```
-```c
-typedef struct {
-    const TokenArray *tokens;
-    int index;
-} Parser;
-- parser
-  - INSERT INTO TABLE VALUES (ROW1, ROW2, ...)
+
+핵심 필드:
+
+- `type`: 이 노드가 무엇인지
+- `text`: 컬럼명, 테이블명, literal 값, 연산자 문자열
+- `first_child`: 첫 번째 자식
+- `next_sibling`: 같은 부모를 가진 다음 형제
+
+즉 이 프로젝트는 `left/right` 이진트리보다는  
+`first_child + next_sibling` 방식의 일반 트리 구조를 사용합니다.
+
+## 6. AST는 어떻게 만들어지는가
+
+`src/parser.c`의 `parse_statement()`가 시작점입니다.
+
+- 첫 토큰이 `INSERT`면 `parse_insert()`
+- 첫 토큰이 `SELECT`면 `parse_select()`
+
+그 안에서 다시:
+
+- `parse_table_node()`
+- `parse_column_list_node()`
+- `parse_where_node()`
+- `parse_value_list_node()`
+
+같은 함수들이 자식 노드를 만들어 연결합니다.
+
+### 6.1 AST 생성 flowchart
+
+```mermaid
+flowchart TD
+    A["parse_statement()"] --> B{"첫 토큰은?"}
+    B -->|INSERT| C["parse_insert()"]
+    B -->|SELECT| D["parse_select()"]
+    C --> E["TABLE 노드 생성"]
+    C --> F["VALUE_LIST 노드 생성"]
+    C --> G["NODE_INSERT 루트 생성"]
+    G --> H["TABLE, VALUE_LIST 연결"]
+    D --> I["COLUMN_LIST 노드 생성"]
+    D --> J["TABLE 노드 생성"]
+    D --> K{"WHERE 존재?"}
+    K -->|예| L["WHERE 노드 생성"]
+    K -->|아니오| M["WHERE 생략"]
+    D --> N["NODE_SELECT 루트 생성"]
+    N --> O["COLUMN_LIST, TABLE, WHERE 연결"]
 ```
 
-```c
-static ASTNode *parse_insert(Parser *parser, Status *status) {
-    ASTNode *root;
-    ASTNode *table_node;
-    ASTNode *value_list_node;
-if (!expect(parser, TOKEN_KEYWORD_INSERT, status, "Parse error: expected INSERT")) return NULL;
-if (!expect(parser, TOKEN_KEYWORD_INTO, status, "Parse error: expected INTO")) return NULL;
+## 7. SELECT AST 예시
 
-table_node = parse_table_node(parser, status);
-if (table_node == NULL) return NULL;
+예시 SQL:
 
-if (!expect(parser, TOKEN_KEYWORD_VALUES, status, "Parse error: expected VALUES")) {
-    free_ast(table_node);
-    return NULL;
-}
-if (!expect(parser, TOKEN_LPAREN, status, "Parse error: expected '(' after VALUES")) {
-    free_ast(table_node);
-    return NULL;
-}
-
-value_list_node = parse_value_list_node(parser, status);
-if (value_list_node == NULL) {
-    free_ast(table_node);
-    return NULL;
-}
-
-if (!expect(parser, TOKEN_RPAREN, status, "Parse error: expected ')' after values")) {
-    free_ast(table_node);
-    free_ast(value_list_node);
-    return NULL;
-}
-match(parser, TOKEN_SEMICOLON);
-if (!expect(parser, TOKEN_EOF, status, "Parse error: unexpected tokens after statement")) {
-    free_ast(table_node);
-    free_ast(value_list_node);
-    return NULL;
-}
-
-root = create_ast_node(NODE_INSERT, NULL, AST_VALUE_NONE);
-if (root == NULL) {
-    free_ast(table_node);
-    free_ast(value_list_node);
-    snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
-    return NULL;
-}
-
-append_child(root, table_node);
-append_child(root, value_list_node);
-return root;
-}
+```sql
+SELECT name FROM users WHERE id = 1;
 ```
 
-`SELECT name FROM users WHERE id = 1;` 는 내부적으로 대략 이런 구조가 됩니다.
+AST:
 
 ```text
 NODE_SELECT
@@ -374,7 +258,73 @@ NODE_SELECT
     └── NODE_VALUE("1")
 ```
 
-`INSERT INTO users VALUES (1, 'Kim', 20);` 는 내부적으로 대략 이런 구조가 됩니다.
+flowchart로 보면:
+
+```mermaid
+flowchart TD
+    A["NODE_SELECT"] --> B["NODE_COLUMN_LIST"]
+    A --> C["NODE_TABLE"]
+    A --> D["NODE_WHERE"]
+    B --> E["NODE_COLUMN: name"]
+    C --> F["NODE_IDENTIFIER: school"]
+    C --> G["NODE_IDENTIFIER: users"]
+    D --> H["NODE_COLUMN: id"]
+    D --> I["NODE_OPERATOR: ="]
+    D --> J["NODE_VALUE: 1"]
+```
+
+## 8. BETWEEN AST 예시
+
+예시 SQL:
+
+```sql
+SELECT * FROM users WHERE age BETWEEN 20 AND 30;
+```
+
+AST:
+
+```text
+NODE_SELECT
+├── NODE_COLUMN_LIST
+│   └── NODE_COLUMN("*")
+├── NODE_TABLE
+│   ├── NODE_IDENTIFIER("school")
+│   └── NODE_IDENTIFIER("users")
+└── NODE_WHERE
+    ├── NODE_COLUMN("age")
+    └── NODE_BETWEEN
+        ├── NODE_VALUE("20")
+        └── NODE_VALUE("30")
+```
+
+flowchart:
+
+```mermaid
+flowchart TD
+    A["NODE_SELECT"] --> B["NODE_COLUMN_LIST"]
+    A --> C["NODE_TABLE"]
+    A --> D["NODE_WHERE"]
+    B --> E["NODE_COLUMN: *"]
+    C --> F["NODE_IDENTIFIER: school"]
+    C --> G["NODE_IDENTIFIER: users"]
+    D --> H["NODE_COLUMN: age"]
+    D --> I["NODE_BETWEEN"]
+    I --> J["NODE_VALUE: 20"]
+    I --> K["NODE_VALUE: 30"]
+```
+
+## 9. INSERT AST 예시
+
+예시 SQL:
+
+```sql
+INSERT INTO users VALUES ('Kim', 20);
+```
+
+현재 버전에서는 `id`는 직접 넣지 않습니다.  
+`name`, `age`만 입력하고 `id`는 자동 증가합니다.
+
+AST:
 
 ```text
 NODE_INSERT
@@ -382,113 +332,310 @@ NODE_INSERT
 │   ├── NODE_IDENTIFIER("school")
 │   └── NODE_IDENTIFIER("users")
 └── NODE_VALUE_LIST
-    ├── NODE_VALUE("1")
     ├── NODE_VALUE("Kim")
     └── NODE_VALUE("20")
 ```
 
-## 빌드 방법
+flowchart:
 
-PowerShell 기준:
-
-```powershell
-cd C:\crafton\1\SQLInsertSelect
-gcc -std=c11 -Wall -Wextra -pedantic -Isrc -o sql_processor src\main.c src\lexer.c src\parser.c src\meta.c src\storage.c src\executor.c src\util.c
+```mermaid
+flowchart TD
+    A["NODE_INSERT"] --> B["NODE_TABLE"]
+    A --> C["NODE_VALUE_LIST"]
+    B --> D["NODE_IDENTIFIER: school"]
+    B --> E["NODE_IDENTIFIER: users"]
+    C --> F["NODE_VALUE: Kim"]
+    C --> G["NODE_VALUE: 20"]
 ```
 
-또는 `Makefile`을 사용할 수 있습니다.
+## 10. AST를 실제 실행에 어떻게 쓰는가
 
-```powershell
-make
+AST는 단순 그림이 아니라, 실행기의 직접 입력입니다.
+
+예를 들어 `execute_statement()`는:
+
+1. AST에서 `NODE_TABLE`을 찾음
+2. schema/table 이름 추출
+3. 메타 파일 로드
+4. 루트가 `NODE_INSERT`인지 `NODE_SELECT`인지 보고 분기
+
+즉 문자열을 다시 읽는 게 아니라,  
+이미 만들어진 AST를 따라가며 실행합니다.
+
+## 11. B+ 트리는 어떻게 쓰이는가
+
+이 프로젝트의 B+ 트리는 `src/bptree.c`에 있고,  
+현재는 `id` 단일 컬럼 전용입니다.
+
+- key: `id`
+- value: `row_offset`
+
+중요한 점은:
+
+- 실제 row 전체는 메모리에 올리지 않음
+- 메타 정보와 `id -> row_offset` 인덱스만 메모리에 유지
+- 실제 데이터는 계속 `.dat` 파일에서 읽음
+
+## 12. B+ 트리를 메모리에 올리는 과정
+
+테이블 컨텍스트를 처음 준비할 때:
+
+1. `.dat` 파일을 처음부터 끝까지 읽음
+2. 각 row의 `id` 추출
+3. 해당 row가 파일의 몇 번째 바이트에 있는지 계산
+4. B+ 트리에 `id -> row_offset` 삽입
+
+flowchart:
+
+```mermaid
+flowchart TD
+    A["테이블 메타 로드"] --> B["users.dat 열기"]
+    B --> C["row_size 단위로 fread"]
+    C --> D["row에서 id 추출"]
+    D --> E["현재 row_offset 계산"]
+    E --> F["B+ 트리에 id -> row_offset 삽입"]
+    F --> G{"다음 row 존재?"}
+    G -->|예| C
+    G -->|아니오| H["인덱스 준비 완료"]
 ```
 
-참고:
+관련 함수:
 
-- Windows에서 실행 중인 `.exe`는 덮어쓰기 빌드가 실패할 수 있습니다.
-- 이 경우 새 파일명으로 빌드하면 됩니다.
+- `build_id_index_from_data()`
+- `bptree_insert()`
 
-예:
+## 13. B+ 트리 검색은 어떻게 동작하는가
 
-```powershell
-gcc -std=c11 -Wall -Wextra -pedantic -Isrc -o sql_processor_ast2 src\main.c src\lexer.c src\parser.c src\meta.c src\storage.c src\executor.c src\util.c
-```
-
-## 실행 방법
-
-### 1. SQL 파일 실행
-
-```powershell
-.\sql_processor.exe sample_insert.sql
-.\sql_processor.exe sample_select.sql
-.\sql_processor.exe sample_where.sql
-.\sql_processor.exe sample_where_ge.sql
-.\sql_processor.exe sample_where_ne.sql
-```
-
-### 2. REPL 실행
-
-```powershell
-.\sql_processor.exe --repl
-```
-
-예시 입력:
+예시:
 
 ```sql
-INSERT INTO users VALUES (1, 'Kim', 20);
-SELECT * FROM users;
-SELECT name FROM users WHERE age >= 10;
+SELECT * FROM users WHERE id = 3;
 ```
 
-## 샘플 SQL 파일
+실행 흐름:
 
-- [sample_insert.sql](C:\crafton\1\SQLInsertSelect\sample_insert.sql)
-- [sample_select.sql](C:\crafton\1\SQLInsertSelect\sample_select.sql)
-- [sample_where.sql](C:\crafton\1\SQLInsertSelect\sample_where.sql)
-- [sample_where_ge.sql](C:\crafton\1\SQLInsertSelect\sample_where_ge.sql)
-- [sample_where_ne.sql](C:\crafton\1\SQLInsertSelect\sample_where_ne.sql)
+1. `WHERE`가 `id = 숫자` 형태인지 확인
+2. 맞으면 B+ 트리 사용
+3. `bptree_search()`로 `id=3` 검색
+4. `row_offset` 획득
+5. `.dat` 파일에서 해당 위치로 바로 이동
+6. row 하나만 읽어서 출력
 
-## 기본 스키마 처리
+flowchart:
 
-현재 기본 스키마 이름은 `school`입니다.
+```mermaid
+flowchart TD
+    A["SELECT ... WHERE id = 3"] --> B["WHERE 구조 분석"]
+    B --> C{"id = number 인가?"}
+    C -->|예| D["bptree_search(id)"]
+    D --> E["row_offset 획득"]
+    E --> F["fseek로 해당 위치 이동"]
+    F --> G["row 1개 fread"]
+    G --> H["컬럼 해석 후 출력"]
+```
 
-따라서 아래 두 SQL은 같은 의미로 처리됩니다.
+관련 함수:
+
+- `extract_index_search_id()`
+- `select_by_id_index()`
+- `bptree_search()`
+
+## 14. 선형 탐색은 어떻게 동작하는가
+
+예시:
+
+```sql
+SELECT * FROM users WHERE age = 20;
+SELECT * FROM users WHERE age BETWEEN 20 AND 30;
+```
+
+이 경우는 인덱스를 쓰지 않습니다.
+
+흐름:
+
+1. `.dat` 파일을 처음부터 끝까지 읽음
+2. 각 row에서 `age` 위치를 메타로 찾음
+3. 조건과 비교
+4. 맞는 row만 출력
+
+flowchart:
+
+```mermaid
+flowchart TD
+    A["SELECT ... WHERE age = 20"] --> B["data 파일 열기"]
+    B --> C["row_size 단위로 fread"]
+    C --> D["row에서 age 추출"]
+    D --> E["조건 비교"]
+    E --> F{"일치하는가?"}
+    F -->|예| G["출력"]
+    F -->|아니오| H["다음 row"]
+    G --> H
+    H --> I{"다음 row 존재?"}
+    I -->|예| C
+    I -->|아니오| J["종료"]
+```
+
+관련 함수:
+
+- `execute_select()`
+- `row_matches_where()`
+
+## 15. 인덱스를 쓰는 쿼리와 쓰지 않는 쿼리
+
+인덱스 사용:
+
+```sql
+SELECT * FROM users WHERE id = 3;
+```
+
+선형 탐색:
+
+```sql
+SELECT * FROM users WHERE age = 20;
+SELECT * FROM users WHERE name = 'Kim';
+SELECT * FROM users WHERE id >= 3;
+SELECT * FROM users WHERE age BETWEEN 20 AND 30;
+```
+
+즉 현재 규칙은 아주 명확합니다.
+
+- `WHERE id = 숫자`만 B+ 트리
+- 그 외는 모두 선형 탐색
+
+## 16. 지원 SQL
+
+### INSERT
+
+```sql
+INSERT INTO users VALUES ('Kim', 20);
+INSERT INTO school.users VALUES ('Lee', 25);
+```
+
+### SELECT
 
 ```sql
 SELECT * FROM users;
-SELECT * FROM school.users;
+SELECT name FROM users WHERE id = 1;
+SELECT * FROM users WHERE age = 20;
+SELECT * FROM users WHERE age >= 18;
+SELECT * FROM users WHERE age BETWEEN 20 AND 30;
 ```
 
-## 주요 소스 파일 설명
+### 현재 지원하는 비교
 
-- [main.c](C:\crafton\1\SQLInsertSelect\src\main.c)
-  - 파일 실행 모드와 REPL 모드 진입점
-- [lexer.c](C:\crafton\1\SQLInsertSelect\src\lexer.c)
-  - SQL 문자열을 토큰 배열로 분리
-- [parser.c](C:\crafton\1\SQLInsertSelect\src\parser.c)
-  - 토큰 배열을 노드 기반 AST로 변환
-- [meta.c](C:\crafton\1\SQLInsertSelect\src\meta.c)
-  - 메타 CSV를 읽어 `TableMeta` 구성
-- [storage.c](C:\crafton\1\SQLInsertSelect\src\storage.c)
-  - 바이너리 row 저장/조회 처리
-- [executor.c](C:\crafton\1\SQLInsertSelect\src\executor.c)
-  - AST를 보고 `INSERT` / `SELECT` 분기 실행
-- [util.c](C:\crafton\1\SQLInsertSelect\src\util.c)
-  - 문자열 유틸, AST 생성/해제 유틸
-- [sql_processor.h](C:\crafton\1\SQLInsertSelect\src\sql_processor.h)
-  - 공통 타입, 구조체, 함수 선언
+- `=`
+- `!=`
+- `>`
+- `>=`
+- `<`
+- `<=`
+- `BETWEEN low AND high`
 
-## 현재 한계
+### 현재 지원하지 않는 것
 
-- 문자열 타입은 현재 `CHAR(n)` 중심입니다.
-- 다중 조건 `WHERE`는 아직 지원하지 않습니다.
-- 인덱스 없이 순차 탐색으로 조회합니다.
-- 긴 경로에서 `snprintf` 경고가 일부 남아 있습니다.
+- `AND`
+- `OR`
+- 다중 WHERE 조건
+- 괄호식
+- JOIN
+- UPDATE
+- DELETE
+- ORDER BY
+- GROUP BY
 
-### 회고
-- 코드를 전부 본 이유
-  - Top-down으로 빠르게 풀어내는 방식을 확인해보기 위해
-    - 추상 구문 트리의 실제 구조가 어떻게 이루어지는지, 코드상으로 확인함으로서 구조가 어느정도 이해가 되었음
-  - AI에게 코드를 맡겼을 때에 신뢰성 문제와 AI 공격에 대한 사람으로서 최후의 행위를 시도하였을 때 효율적으로 어떻게 대처할 것인지 확인하기 위해서
-    - 실제로 AST의 구현을 토큰화만 하여 반만 구현한 것을 확인
-    - 페르소나 검증 등으로 하는 방법이 더 효율적
-  - 이 행위를 단순화 시키기 위한 영감을 얻기 위해서
+## 17. 빌드
+
+### Windows (GCC)
+
+```powershell
+gcc -std=c11 -Wall -Wextra -pedantic -Isrc -o sql_processor_bptree src\main.c src\lexer.c src\parser.c src\meta.c src\storage.c src\executor.c src\util.c src\bptree.c
+```
+
+### Docker
+
+```powershell
+docker build -t sql-insert-select .
+docker run --rm -it -v "${PWD}:/workspace" sql-insert-select
+```
+
+### REPL 실행
+
+```powershell
+.\sql_processor_bptree.exe --repl
+```
+
+### 샘플 SQL 실행
+
+```powershell
+.\sql_processor_bptree.exe sample_select.sql
+.\sql_processor_bptree.exe sample_insert.sql
+.\sql_processor_bptree.exe sample_where_between.sql
+```
+
+## 18. 대량 데이터 생성기
+
+`tools/generate_records.py`
+
+예시:
+
+```powershell
+python tools\generate_records.py --count 1000000 --output generated_records.sql --seed 20260415
+```
+
+생성 SQL 형식:
+
+```sql
+INSERT INTO users VALUES ('Alice', 27);
+```
+
+## 19. 성능 측정
+
+PowerShell:
+
+```powershell
+Set-Content q_id.sql "SELECT * FROM users WHERE id = 500000;"
+Set-Content q_age.sql "SELECT * FROM users WHERE age = 30;"
+Set-Content q_between.sql "SELECT * FROM users WHERE age BETWEEN 20 AND 30;"
+
+Measure-Command { .\sql_processor_bptree.exe q_id.sql *> $null }
+Measure-Command { .\sql_processor_bptree.exe q_age.sql *> $null }
+Measure-Command { .\sql_processor_bptree.exe q_between.sql *> $null }
+```
+
+의미:
+
+- `id = ?`는 B+ 트리
+- `age = ?`, `BETWEEN`은 선형 탐색
+
+## 20. 테스트
+
+단위 테스트:
+
+```powershell
+gcc -std=c11 -Wall -Wextra -pedantic -Isrc -o tests\bptree_tests.exe tests\bptree_tests.c src\lexer.c src\parser.c src\util.c src\bptree.c
+.\tests\bptree_tests.exe
+```
+
+현재 테스트는 최소한 아래를 확인합니다.
+
+- B+ 트리 삽입/검색
+- `BETWEEN` 파싱 AST 구조
+
+## 21. 제한 사항
+
+- B+ 트리는 `id` 전용
+- 인덱스는 메모리에만 유지
+- 프로그램 시작 또는 테이블 preload 시 `.dat`를 읽어 인덱스 재구축
+- `BETWEEN`은 INT 컬럼만 허용
+- `AND`, `OR`, 다중 조건 미지원
+
+## 22. 관련 문서
+
+- `AGENT.md`
+- `sudo/pseudocode.md`
+- `check.md`
+- `context.md`
+
+## 23. 한 줄 요약
+
+이 프로젝트는 SQL을 토큰화하고 AST로 바꾼 뒤, `WHERE id = ?`는 메모리 B+ 트리로 빠르게 찾고, 나머지 조건은 바이너리 파일을 선형 탐색하는 파일 기반 미니 DBMS입니다.

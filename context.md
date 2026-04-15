@@ -247,3 +247,7 @@ docker run --rm -it --entrypoint python3 -v ${PWD}:/workspace sql-insert-select 
 - `snprintf` 경로 길이 관련 경고가 일부 남아 있다.
 - PowerShell 출력에서는 일부 한글 파일이 인코딩 문제로 깨져 보일 수 있다.
 - 실제 소스/문서 파일은 UTF-8 기준으로 유지하는 방향이 안전하다.
+
+## 2026-04-15 README update
+- README.md was refreshed to match the current B+ tree, BETWEEN, Docker, timing-log, and performance-test workflow.
+
