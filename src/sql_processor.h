@@ -4,9 +4,9 @@
 #include <stdio.h>
 
 /*
- * 프로젝트 전체에서 사용하는 고정 제한값들이다.
- * 과제를 단순하고 예측 가능하게 유지하기 위해 컬럼 수, 경로 길이,
- * SQL 입력 길이, 바이너리 row 최대 크기를 상수로 제한한다.
+ * 이 프로젝트에서 공통으로 사용하는 고정 상수들이다.
+ * 과제 범위를 벗어나지 않도록 컬럼 수, 경로 길이, SQL 길이, row 버퍼 크기를
+ * 적당한 상한선으로 제한해서 메모리 관리와 예외 처리를 단순하게 만든다.
  */
 #define MAX_COLUMNS 16
 #define MAX_NAME_LEN 32
@@ -16,79 +16,113 @@
 #define DEFAULT_SCHEMA_NAME "school"
 
 /*
- * B+ 트리 차수 설정이다.
- * BPTREE_MAX_KEYS는 노드가 정상 상태에서 가질 수 있는 최대 key 수고,
- * 배열은 overflow 후 split을 처리할 수 있도록 한 칸 더 크게 잡는다.
+ * 메모리 기반 B+ 트리의 차수 설정이다.
+ * - BPTREE_ORDER: 노드 배열을 얼마나 크게 잡을지 나타낸다.
+ * - BPTREE_MAX_KEYS: 분할 전 정상 상태에서 한 노드가 가질 수 있는 최대 key 수다.
+ *
+ * 배열 크기를 BPTREE_ORDER 기준으로 한 칸 더 크게 잡아두고,
+ * 삽입 직후 잠깐 overflow 상태가 된 뒤 split하는 흐름을 구현한다.
  */
 #define BPTREE_ORDER 32
 #define BPTREE_MAX_KEYS (BPTREE_ORDER - 1)
 
-/* Lexer가 원본 SQL 문자열을 잘라서 만드는 토큰 종류들이다. */
+/*
+ * Lexer가 SQL 문자열을 잘라 만든 토큰 종류다.
+ * 같은 문자열이라도 문맥에 따라 schema / table / column 역할이 달라지므로,
+ * lexer 단계에서는 일단 문법적 종류만 분류하고 실제 의미 해석은 parser가 담당한다.
+ */
 typedef enum {
-    TOKEN_IDENTIFIER,        /* 일반 이름: users, age, school */
-    TOKEN_STRING,            /* 문자열 literal: 'Kim' */
-    TOKEN_NUMBER,            /* 숫자 literal: 10, 123 */
-    TOKEN_STAR,              /* '*' */
-    TOKEN_COMMA,             /* ',' */
-    TOKEN_DOT,               /* '.' */
-    TOKEN_LPAREN,            /* '(' */
-    TOKEN_RPAREN,            /* ')' */
-    TOKEN_EQUAL,             /* '=' */
-    TOKEN_NOT_EQUAL,         /* '!=' */
-    TOKEN_GREATER,           /* '>' */
-    TOKEN_GREATER_EQUAL,     /* '>=' */
-    TOKEN_LESS,              /* '<' */
-    TOKEN_LESS_EQUAL,        /* '<=' */
-    TOKEN_SEMICOLON,         /* ';' */
-    TOKEN_EOF,               /* 입력 끝 */
-    TOKEN_KEYWORD_INSERT,    /* INSERT 키워드 */
-    TOKEN_KEYWORD_INTO,      /* INTO 키워드 */
-    TOKEN_KEYWORD_VALUES,    /* VALUES 키워드 */
-    TOKEN_KEYWORD_SELECT,    /* SELECT 키워드 */
-    TOKEN_KEYWORD_FROM,      /* FROM 키워드 */
-    TOKEN_KEYWORD_WHERE,     /* WHERE 키워드 */
-    TOKEN_KEYWORD_BETWEEN,   /* BETWEEN 키워드 */
-    TOKEN_KEYWORD_AND        /* BETWEEN 구문의 AND 키워드 */
+    TOKEN_IDENTIFIER,      /* 일반 이름: users, age, school, verify */
+    TOKEN_STRING,          /* 문자열 literal: 'Kim' */
+    TOKEN_NUMBER,          /* 숫자 literal: 10, -3, 123 */
+    TOKEN_STAR,            /* '*' */
+    TOKEN_COMMA,           /* ',' */
+    TOKEN_DOT,             /* '.' */
+    TOKEN_LPAREN,          /* '(' */
+    TOKEN_RPAREN,          /* ')' */
+    TOKEN_EQUAL,           /* '=' */
+    TOKEN_NOT_EQUAL,       /* '!=' */
+    TOKEN_GREATER,         /* '>' */
+    TOKEN_GREATER_EQUAL,   /* '>=' */
+    TOKEN_LESS,            /* '<' */
+    TOKEN_LESS_EQUAL,      /* '<=' */
+    TOKEN_SEMICOLON,       /* ';' */
+    TOKEN_EOF,             /* 입력 끝 표시용 가상 토큰 */
+    TOKEN_KEYWORD_INSERT,  /* INSERT 예약어 */
+    TOKEN_KEYWORD_INTO,    /* INTO 예약어 */
+    TOKEN_KEYWORD_VALUES,  /* VALUES 예약어 */
+    TOKEN_KEYWORD_SELECT,  /* SELECT 예약어 */
+    TOKEN_KEYWORD_FROM,    /* FROM 예약어 */
+    TOKEN_KEYWORD_WHERE,   /* WHERE 예약어 */
+    TOKEN_KEYWORD_BETWEEN, /* BETWEEN 예약어 */
+    TOKEN_KEYWORD_AND      /* BETWEEN low AND high 의 AND 예약어 */
 } TokenType;
 
-/* SQL을 자른 가장 작은 단위 하나다. type은 종류, text는 실제 문자열이다. */
+/*
+ * 토큰 하나를 표현하는 구조체다.
+ * - type: 토큰의 문법적 종류
+ * - text: 원본 SQL에서 잘라낸 문자열
+ *
+ * 예:
+ *   SELECT * FROM users;
+ * 에서 "users"는 TOKEN_IDENTIFIER, text="users" 로 저장된다.
+ */
 typedef struct {
     TokenType type;
     char *text;
 } Token;
 
-/* Lexer가 반환하는 동적 토큰 배열이다. */
+/*
+ * lexer가 동적으로 만들어 반환하는 토큰 배열이다.
+ * - items: heap에 할당된 Token 배열
+ * - count: 실제 토큰 개수
+ */
 typedef struct {
     Token *items;
     int count;
 } TokenArray;
 
-/* AST 값 노드가 어떤 종류의 literal인지 표시한다. */
+/*
+ * AST 노드가 어떤 종류의 literal 값을 담는지 표현한다.
+ * 구조 노드(TABLE, WHERE 등)는 AST_VALUE_NONE을 사용하고,
+ * 실제 값 노드만 STRING 또는 NUMBER를 사용한다.
+ */
 typedef enum {
-    AST_VALUE_NONE,    /* 값이 없는 노드: SELECT, TABLE, WHERE 같은 구조 노드 */
-    AST_VALUE_STRING,  /* 문자열 literal 값: 'Kim' */
-    AST_VALUE_NUMBER   /* 숫자 literal 값: 10, 123 */
+    AST_VALUE_NONE,    /* 값이 없는 구조 노드 */
+    AST_VALUE_STRING,  /* 문자열 literal */
+    AST_VALUE_NUMBER   /* 숫자 literal */
 } ASTValueType;
 
-/* 노드 기반 AST에서 사용하는 노드 종류다. */
+/*
+ * 노드 기반 AST에서 사용하는 노드 종류다.
+ * parser는 SQL 문장을 아래 노드들의 조합으로 바꿔서 executor에 넘긴다.
+ */
 typedef enum {
-    NODE_SELECT,       /* SELECT 문 전체를 나타내는 루트 노드 */
-    NODE_INSERT,       /* INSERT 문 전체를 나타내는 루트 노드 */
-    NODE_TABLE,        /* 대상 schema/table 정보를 담는 노드 */
+    NODE_SELECT,       /* SELECT 문 전체를 대표하는 루트 노드 */
+    NODE_INSERT,       /* INSERT 문 전체를 대표하는 루트 노드 */
+    NODE_TABLE,        /* 대상 schema/table 정보를 묶는 노드 */
     NODE_COLUMN,       /* 컬럼 이름 하나를 담는 노드 */
     NODE_COLUMN_LIST,  /* SELECT 컬럼 목록을 담는 부모 노드 */
     NODE_VALUE,        /* literal 값 하나를 담는 노드 */
     NODE_VALUE_LIST,   /* INSERT VALUES 목록을 담는 부모 노드 */
     NODE_WHERE,        /* WHERE 절 전체를 담는 노드 */
-    NODE_IDENTIFIER,   /* schema 이름이나 table 이름 같은 식별자 노드 */
+    NODE_IDENTIFIER,   /* schema 이름이나 table 이름을 담는 식별자 노드 */
     NODE_OPERATOR,     /* WHERE 비교 연산자 노드: =, !=, >, >=, <, <= */
-    NODE_BETWEEN       /* BETWEEN 절의 lower/upper bound를 담는 노드 */
+    NODE_BETWEEN       /* BETWEEN lower / upper bound를 담는 노드 */
 } NodeType;
 
 /*
  * 노드 기반 AST의 기본 구조체다.
- * text에는 컬럼명, 테이블명, 실제 literal 값, 연산자 문자열 등이 들어간다.
- * first_child는 첫 자식 노드, next_sibling은 같은 부모를 가진 다음 노드다.
+ * - type: 노드 종류
+ * - value_type: literal 값의 종류
+ * - text: 컬럼명, 테이블명, literal 값, 연산자 문자열 등
+ * - first_child: 첫 번째 자식 노드
+ * - next_sibling: 같은 부모 아래 다음 형제 노드
+ *
+ * 이 구조를 이용해:
+ *   SELECT -> COLUMN_LIST -> COLUMN ...
+ *   SELECT -> TABLE -> IDENTIFIER ...
+ * 같은 트리를 만든다.
  */
 typedef struct ASTNode {
     NodeType type;
@@ -98,76 +132,113 @@ typedef struct ASTNode {
     struct ASTNode *next_sibling;
 } ASTNode;
 
-/* 메타 CSV에서 읽어온 컬럼 저장 타입이다. */
+/*
+ * 메타 CSV에서 읽은 컬럼 타입이다.
+ * 이번 프로젝트는 INT와 CHAR만 다룬다.
+ */
 typedef enum {
     COL_INT,   /* 4바이트 정수 컬럼 */
-    COL_CHAR   /* 고정 길이 문자 컬럼 */
+    COL_CHAR   /* 고정 길이 문자열 컬럼 */
 } ColumnType;
 
 /*
  * 컬럼 하나의 메타정보다.
- * 바이너리 row를 해석하거나 쓸 때 각 컬럼의 이름, 타입, 크기, 시작 위치를 알려준다.
+ * - name: 컬럼 이름
+ * - type: 컬럼 타입
+ * - size: row 안에서 차지하는 바이트 수
+ * - offset: row 시작 기준 이 컬럼이 시작하는 위치
+ *
+ * storage 계층은 offset과 size를 이용해 바이너리 row를 해석한다.
  */
 typedef struct {
-    char name[MAX_NAME_LEN];  /* 컬럼 이름: id, name, age */
-    ColumnType type;          /* 컬럼 저장 타입: INT 또는 CHAR */
-    int size;                 /* 이 컬럼이 row 안에서 차지하는 바이트 수 */
-    int offset;               /* row 시작점 기준 이 컬럼이 시작하는 바이트 위치 */
+    char name[MAX_NAME_LEN];
+    ColumnType type;
+    int size;
+    int offset;
 } ColumnDef;
 
 /*
- * 특정 schema.table 전체의 메타정보를 메모리에 올린 구조체다.
- * 메타 CSV를 읽은 뒤 실행기와 저장소 계층이 이 구조를 기준으로 동작한다.
+ * 특정 schema.table의 메타정보 전체다.
+ * - schema_name, table_name: 현재 다루는 테이블 이름
+ * - columns: 컬럼 메타 배열
+ * - column_count: 실제 컬럼 수
+ * - row_size: 바이너리 row 전체 크기
+ * - data_file_path: .dat 파일 경로
+ * - meta_file_path: .schema.csv 파일 경로
  */
 typedef struct {
-    char schema_name[MAX_NAME_LEN];     /* 스키마 이름: school */
-    char table_name[MAX_NAME_LEN];      /* 테이블 이름: users */
-    ColumnDef columns[MAX_COLUMNS];     /* 이 테이블이 가진 컬럼 목록 */
-    int column_count;                   /* 실제로 로드된 컬럼 개수 */
-    int row_size;                       /* row 하나 전체 크기 = 모든 컬럼 size의 합 */
-    char data_file_path[MAX_PATH_LEN];  /* 실제 바이너리 데이터 파일 경로 */
-    char meta_file_path[MAX_PATH_LEN];  /* 메타 CSV 파일 경로 */
+    char schema_name[MAX_NAME_LEN];
+    char table_name[MAX_NAME_LEN];
+    ColumnDef columns[MAX_COLUMNS];
+    int column_count;
+    int row_size;
+    char data_file_path[MAX_PATH_LEN];
+    char meta_file_path[MAX_PATH_LEN];
 } TableMeta;
 
-/* 함수 성공 여부와 사용자에게 보여줄 메시지를 함께 전달한다. */
+/*
+ * 함수 실행 성공 여부와 사용자에게 보여줄 메시지를 함께 전달하는 구조체다.
+ * - ok: 성공이면 1, 실패이면 0
+ * - message: 사람이 읽을 수 있는 오류 메시지
+ */
 typedef struct {
     int ok;
     char message[256];
 } Status;
 
-/* 실행 경로를 간단히 분류해 성능 로그와 디버깅에 활용한다. */
+/*
+ * 마지막 SQL이 어떤 경로로 실행됐는지 나타낸다.
+ * 성능 로그나 디버깅 메시지에서 "인덱스 사용" / "풀스캔"을 구분할 때 쓴다.
+ */
 typedef enum {
-    EXECUTION_PATH_UNKNOWN,
-    EXECUTION_PATH_INSERT,
-    EXECUTION_PATH_INDEXED,
-    EXECUTION_PATH_FULL_SCAN
+    EXECUTION_PATH_UNKNOWN,   /* 아직 실행 경로를 결정하지 못한 상태 */
+    EXECUTION_PATH_INSERT,    /* INSERT 실행 경로 */
+    EXECUTION_PATH_INDEXED,   /* B+ 트리 인덱스를 사용한 SELECT */
+    EXECUTION_PATH_FULL_SCAN  /* 바이너리 파일 전체를 선형 탐색한 SELECT */
 } ExecutionPath;
 
-/* B+ 트리의 노드 하나다. leaf는 key->offset을, internal은 key->child를 가진다. */
+/*
+ * B+ 트리의 실제 노드 구조다.
+ * - is_leaf: 리프 노드인지 여부
+ * - key_count: 현재 key 개수
+ * - keys: 정렬된 key 배열
+ * - offsets: leaf 노드에서 key와 매칭되는 row offset
+ * - children: internal 노드에서 자식 포인터
+ * - next: leaf 노드끼리의 연결 포인터
+ *
+ * 이번 구현은 id 전용 인덱스라서 key는 int, value는 row offset(long)이다.
+ */
 typedef struct BPTreeNode {
-    int is_leaf;                                 /* 1이면 leaf node, 0이면 internal node */
-    int key_count;                               /* 현재 노드에 들어 있는 key 수 */
-    int keys[BPTREE_ORDER];                      /* overflow split 전까지 담을 key 배열 */
-    long offsets[BPTREE_ORDER];                  /* leaf node에서 key와 매핑되는 row offset */
-    struct BPTreeNode *children[BPTREE_ORDER + 1]; /* internal node에서 자식 포인터 */
-    struct BPTreeNode *next;                     /* leaf node끼리 순서대로 연결하는 포인터 */
+    int is_leaf;
+    int key_count;
+    int keys[BPTREE_ORDER];
+    long offsets[BPTREE_ORDER];
+    struct BPTreeNode *children[BPTREE_ORDER + 1];
+    struct BPTreeNode *next;
 } BPTreeNode;
 
-/* 현재 테이블의 id 인덱스를 메모리에 유지하는 B+ 트리 구조다. */
+/*
+ * 현재 테이블의 id 인덱스를 담는 B+ 트리 핸들이다.
+ * root만 알면 하위 노드를 따라가며 탐색/삽입할 수 있다.
+ */
 typedef struct {
-    BPTreeNode *root;  /* 트리의 루트 노드 */
+    BPTreeNode *root;
 } BPTree;
 
 /*
- * 실행 중 현재 테이블 상태를 함께 들고 있는 컨텍스트다.
- * 메타, 현재 record 수, 그리고 id 인덱스를 한 곳에 모아 둔다.
+ * 현재 실행 중인 테이블 상태를 메모리에 들고 있는 컨텍스트다.
+ * - meta: 현재 테이블 메타정보
+ * - id_index: id -> row_offset B+ 트리
+ * - record_count: 현재 data 파일 row 수
+ * - is_loaded: 컨텍스트가 유효하게 로드되었는지 여부
+ * - last_execution_path: 마지막 SQL이 실제로 사용한 실행 경로
  */
 typedef struct {
-    TableMeta meta;       /* 현재 로드된 테이블 메타 */
-    BPTree id_index;      /* id -> row_offset B+ 트리 인덱스 */
-    int record_count;     /* 현재 data 파일 기준 row 수 */
-    int is_loaded;        /* 컨텍스트가 유효하게 초기화됐는지 여부 */
-    ExecutionPath last_execution_path; /* 마지막 SQL이 실제로 사용한 접근 경로 */
+    TableMeta meta;
+    BPTree id_index;
+    int record_count;
+    int is_loaded;
+    ExecutionPath last_execution_path;
 } ExecutionContext;
 
 /* 문자열 유틸 함수들 */
@@ -182,18 +253,18 @@ void append_child(ASTNode *parent, ASTNode *child);
 ASTNode *find_child(ASTNode *parent, NodeType type);
 void free_ast(ASTNode *node);
 
-/* Lexer / Parser */
+/* Lexer / Parser 진입점 */
 TokenArray lex_sql(const char *sql, Status *status);
 void free_tokens(TokenArray *tokens);
 int parse_statement(const TokenArray *tokens, ASTNode **root, Status *status);
 
-/* B+ 트리 */
+/* B+ 트리 API */
 void bptree_init(BPTree *tree);
 void bptree_free(BPTree *tree);
 int bptree_insert(BPTree *tree, int key, long offset, Status *status);
 int bptree_search(const BPTree *tree, int key, long *offset);
 
-/* Meta / Storage / Execution */
+/* 메타 / 저장 / 실행 계층 API */
 int load_table_meta(const char *schema_name, const char *table_name, TableMeta *meta, Status *status);
 int ensure_parent_directory(const char *file_path, Status *status);
 int build_id_index_from_data(ExecutionContext *context, Status *status);

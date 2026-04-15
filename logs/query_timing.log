@@ -1,3 +1,14 @@
 2026-04-15 16:58:03 | mode=REPL | path=indexed | time_ms=15.118 | sql=select * from users where id = 1
 2026-04-15 16:58:13 | mode=REPL | path=indexed | time_ms=10.809 | sql=select * from users where id = 50000
 2026-04-15 16:58:25 | mode=REPL | path=full_scan | time_ms=1310.880 | sql=select * from users where age = 255
+2026-04-15 17:14:54 | mode=FILE | path=full_scan | time_ms=2080.097 | sql=SELECT * FROM users;
+2026-04-15 17:15:27 | mode=REPL | path=unknown | time_ms=0.055 | sql=sql=select * from users where age = 50
+2026-04-15 17:15:36 | mode=REPL | path=full_scan | time_ms=1689.983 | sql=select * from users where age = 50
+2026-04-15 17:15:54 | mode=REPL | path=unknown | time_ms=0.049 | sql=select * from users where age = 255\
+2026-04-15 17:15:56 | mode=REPL | path=full_scan | time_ms=1212.269 | sql=select * from users where age = 25
+2026-04-15 17:15:58 | mode=REPL | path=full_scan | time_ms=884.535 | sql=select * from users where age = 255
+2026-04-15 17:16:07 | mode=REPL | path=indexed | time_ms=15.760 | sql=select * from users where id = 1
+2026-04-15 17:16:13 | mode=REPL | path=indexed | time_ms=15.974 | sql=select * from users where id = 100000
+2026-04-15 17:16:59 | mode=REPL | path=indexed | time_ms=12.995 | sql=select * from users where id = 1000006
+2026-04-15 17:17:21 | mode=REPL | path=unknown | time_ms=0.053 | sql=select * from users where name=test
+2026-04-15 17:17:28 | mode=REPL | path=full_scan | time_ms=938.258 | sql=select * from users where name='test'

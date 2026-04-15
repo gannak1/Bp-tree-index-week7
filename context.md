@@ -203,6 +203,7 @@ INSERT INTO users VALUES ('Kim', 20);
 - 대량 INSERT SQL 생성기 추가
 - 샘플 `users.dat`를 중복 `id` 없는 상태로 정리
 - 루트 `Dockerfile`과 `.dockerignore` 추가
+- `sql_processor.h`, `main.c`, `lexer.c`, `parser.c`, `meta.c`, `executor.c`, `storage.c`, `util.c`, `bptree.c`에 역할 중심 주석을 대폭 보강
 
 ## Docker 실행 방식
 

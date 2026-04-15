@@ -1,3 +1,0 @@
-2026-04-15 16:58:03 | mode=REPL | path=indexed | time_ms=15.118 | sql=select * from users where id = 1
-2026-04-15 16:58:13 | mode=REPL | path=indexed | time_ms=10.809 | sql=select * from users where id = 50000
-2026-04-15 16:58:25 | mode=REPL | path=full_scan | time_ms=1310.880 | sql=select * from users where age = 255

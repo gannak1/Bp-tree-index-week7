@@ -3,15 +3,33 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * 삽입 중 split이 발생했을 때 부모 호출자에게 전달할 결과 구조체다.
+ *
+ * 필드 의미:
+ * - did_split: 현재 노드에서 분할이 일어났는지 여부
+ * - promoted_key: 부모로 올려보낼 기준 key
+ * - right_node: 분할 후 오른쪽 새 노드
+ */
 typedef struct {
     int did_split;
     int promoted_key;
     BPTreeNode *right_node;
 } BPTreeInsertResult;
 
-/* 새 B+ 트리 노드 하나를 초기화한다. */
+/*
+ * B+ 트리 노드 하나를 생성한다.
+ *
+ * 입력:
+ * - is_leaf: 1이면 leaf node, 0이면 internal node
+ *
+ * 내부 동작:
+ * - 노드를 malloc
+ * - 메모리를 0으로 초기화
+ * - is_leaf 플래그 설정
+ */
 static BPTreeNode *create_bptree_node(int is_leaf) {
-    BPTreeNode *node;
+    BPTreeNode *node; /* 새로 만들 노드 */
 
     node = (BPTreeNode *)malloc(sizeof(BPTreeNode));
     if (node == NULL) {
@@ -23,9 +41,15 @@ static BPTreeNode *create_bptree_node(int is_leaf) {
     return node;
 }
 
-/* 하위 child 포인터만 따라가며 트리를 해제한다. leaf next는 따라가지 않는다. */
+/*
+ * 노드와 그 하위 child 포인터를 따라가며 B+ 트리 메모리를 해제한다.
+ *
+ * 주의:
+ * - leaf의 next 포인터는 해제 순회를 위해 사용하지 않는다.
+ * - child 포인터 계층만 따라가도 전체 트리를 한 번만 해제할 수 있다.
+ */
 static void free_bptree_node(BPTreeNode *node) {
-    int i;
+    int i; /* internal node의 자식 배열 순회 인덱스 */
 
     if (node == NULL) {
         return;
@@ -40,9 +64,16 @@ static void free_bptree_node(BPTreeNode *node) {
     free(node);
 }
 
-/* leaf 안에서 key가 들어갈 정렬 위치를 찾는다. */
+/*
+ * leaf 노드에서 key가 들어가야 할 정렬 위치를 찾는다.
+ *
+ * 예:
+ * - keys = [1, 3, 7]
+ * - key = 5
+ * -> 반환값은 2
+ */
 static int find_leaf_insert_index(BPTreeNode *node, int key) {
-    int index = 0;
+    int index = 0; /* 삽입 위치를 찾기 위해 움직이는 인덱스 */
 
     while (index < node->key_count && node->keys[index] < key) {
         index++;
@@ -50,9 +81,15 @@ static int find_leaf_insert_index(BPTreeNode *node, int key) {
     return index;
 }
 
-/* internal node에서 key가 내려갈 child 인덱스를 찾는다. */
+/*
+ * internal node에서 어떤 child로 내려가야 하는지 찾는다.
+ *
+ * 규칙:
+ * - 현재 key보다 작은 separator는 지나가고
+ * - 처음으로 더 큰 separator를 만나기 전 child로 내려간다.
+ */
 static int find_child_index(BPTreeNode *node, int key) {
-    int index = 0;
+    int index = 0; /* child 선택을 위한 인덱스 */
 
     while (index < node->key_count && key >= node->keys[index]) {
         index++;
@@ -60,11 +97,23 @@ static int find_child_index(BPTreeNode *node, int key) {
     return index;
 }
 
-/* leaf node에 key/offset을 삽입하고 overflow 시 split 결과를 반환한다. */
+/*
+ * leaf node에 key/offset을 삽입한다.
+ *
+ * 동작:
+ * - 정렬 위치를 찾는다.
+ * - 뒤쪽 key/offset을 한 칸씩 민다.
+ * - 새 key/offset을 넣는다.
+ * - overflow면 leaf split을 수행한다.
+ *
+ * 반환:
+ * - split 없으면 did_split = 0
+ * - split 있으면 promoted_key와 right_node를 채워 반환
+ */
 static BPTreeInsertResult insert_into_leaf(BPTreeNode *node, int key, long offset, Status *status) {
-    BPTreeInsertResult result;
-    int insert_index;
-    int i;
+    BPTreeInsertResult result; /* 부모에게 돌려줄 split 결과 */
+    int insert_index;          /* 새 key가 들어갈 정렬 위치 */
+    int i;                     /* 뒤쪽 배열을 미는 반복 변수 */
 
     memset(&result, 0, sizeof(result));
 
@@ -88,9 +137,9 @@ static BPTreeInsertResult insert_into_leaf(BPTreeNode *node, int key, long offse
     }
 
     {
-        int split_index = node->key_count / 2;
-        int total_keys = node->key_count;
-        BPTreeNode *right = create_bptree_node(1);
+        int split_index = node->key_count / 2; /* 왼쪽 leaf가 유지할 key 수 */
+        int total_keys = node->key_count;      /* split 전 전체 key 수 */
+        BPTreeNode *right = create_bptree_node(1); /* 새 오른쪽 leaf */
 
         if (right == NULL) {
             snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
@@ -115,12 +164,20 @@ static BPTreeInsertResult insert_into_leaf(BPTreeNode *node, int key, long offse
     }
 }
 
-/* internal node에 승격 key와 새 오른쪽 자식을 삽입하고 overflow 시 split한다. */
+/*
+ * internal node 아래 적절한 child에 삽입을 재귀 호출한다.
+ *
+ * child 쪽 split이 발생하면:
+ * - promoted_key를 현재 internal node에 끼워 넣고
+ * - 오른쪽 새 child 포인터를 연결한다.
+ *
+ * 현재 internal node도 overflow하면 다시 split 결과를 부모로 올린다.
+ */
 static BPTreeInsertResult insert_into_internal(BPTreeNode *node, int key, long offset, Status *status) {
-    BPTreeInsertResult child_result;
-    BPTreeInsertResult result;
-    int child_index;
-    int i;
+    BPTreeInsertResult child_result; /* child 삽입 결과 */
+    BPTreeInsertResult result;       /* 현재 노드 삽입 결과 */
+    int child_index;                 /* 내려갈 child 위치 */
+    int i;                           /* 배열 이동 반복 변수 */
 
     memset(&result, 0, sizeof(result));
 
@@ -152,9 +209,9 @@ static BPTreeInsertResult insert_into_internal(BPTreeNode *node, int key, long o
     }
 
     {
-        int mid_index = node->key_count / 2;
-        int total_keys = node->key_count;
-        BPTreeNode *right = create_bptree_node(0);
+        int mid_index = node->key_count / 2;   /* 부모로 올릴 separator 위치 */
+        int total_keys = node->key_count;      /* split 전 전체 key 수 */
+        BPTreeNode *right = create_bptree_node(0); /* 새 오른쪽 internal node */
 
         if (right == NULL) {
             snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
@@ -178,7 +235,7 @@ static BPTreeInsertResult insert_into_internal(BPTreeNode *node, int key, long o
     return result;
 }
 
-/* 트리 초기 상태를 만든다. */
+/* B+ 트리를 빈 상태로 초기화한다. */
 void bptree_init(BPTree *tree) {
     if (tree == NULL) {
         return;
@@ -186,7 +243,7 @@ void bptree_init(BPTree *tree) {
     tree->root = NULL;
 }
 
-/* 트리 전체를 해제한다. */
+/* B+ 트리 전체 메모리를 해제한다. */
 void bptree_free(BPTree *tree) {
     if (tree == NULL) {
         return;
@@ -196,9 +253,17 @@ void bptree_free(BPTree *tree) {
     tree->root = NULL;
 }
 
-/* key 하나를 B+ 트리에 삽입한다. 필요하면 루트를 분할한다. */
+/*
+ * key 하나를 B+ 트리에 삽입한다.
+ *
+ * 흐름:
+ * - root가 없으면 leaf root를 새로 만든다.
+ * - root가 leaf면 바로 leaf 삽입
+ * - root가 internal이면 재귀 삽입
+ * - root split이 발생하면 새 root를 만든다.
+ */
 int bptree_insert(BPTree *tree, int key, long offset, Status *status) {
-    BPTreeInsertResult result;
+    BPTreeInsertResult result; /* root 삽입 결과 */
 
     if (tree->root == NULL) {
         tree->root = create_bptree_node(1);
@@ -225,7 +290,7 @@ int bptree_insert(BPTree *tree, int key, long offset, Status *status) {
     }
 
     if (result.did_split) {
-        BPTreeNode *new_root = create_bptree_node(0);
+        BPTreeNode *new_root = create_bptree_node(0); /* split 후 새 root */
         if (new_root == NULL) {
             snprintf(status->message, sizeof(status->message), "Execution error: out of memory");
             status->ok = 0;
@@ -242,10 +307,16 @@ int bptree_insert(BPTree *tree, int key, long offset, Status *status) {
     return 1;
 }
 
-/* key를 따라 내려가 leaf에서 row offset을 찾는다. */
+/*
+ * key를 따라가며 leaf에서 row offset을 찾는다.
+ *
+ * 반환:
+ * - 성공: 1, offset 출력
+ * - 실패: 0
+ */
 int bptree_search(const BPTree *tree, int key, long *offset) {
-    BPTreeNode *node;
-    int i;
+    BPTreeNode *node; /* 현재 탐색 중인 노드 */
+    int i;            /* leaf 안에서 key 비교용 인덱스 */
 
     if (tree == NULL || tree->root == NULL) {
         return 0;
@@ -253,7 +324,7 @@ int bptree_search(const BPTree *tree, int key, long *offset) {
 
     node = tree->root;
     while (!node->is_leaf) {
-        int child_index = find_child_index(node, key);
+        int child_index = find_child_index(node, key); /* 다음에 내려갈 child 위치 */
         node = node->children[child_index];
         if (node == NULL) {
             return 0;
