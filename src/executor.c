@@ -9,6 +9,56 @@
  * 파일 저장/로드는 storage.c에 분리되어 있고, 이 파일은 그 모듈들을 조합하는 실행 엔진입니다.
  */
 
+static bool parse_select_projection(const char *sql, const char *select_sql, const char *from,
+                                    ColumnId *columns, int *column_count,
+                                    char *err_kind, size_t err_kind_size,
+                                    char *err_msg, size_t err_msg_size,
+                                    int *err_start, int *err_len) {
+    /*
+     * SELECT 뒤 컬럼 목록을 실제 출력 컬럼 배열로 바꿉니다.
+     * SELECT * 는 column_count = 0으로 두어 출력 함수가 전체 컬럼을 사용하게 합니다.
+     */
+    const char *list_start = select_sql + strlen("SELECT");
+    int list_len = (int)(from - list_start);
+    char select_list[256];
+    if (list_len <= 0 || (size_t)list_len >= sizeof(select_list)) {
+        snprintf(err_kind, err_kind_size, "Syntax Error");
+        snprintf(err_msg, err_msg_size, "Invalid SELECT column list.");
+        *err_start = (int)(list_start - sql);
+        *err_len = list_len > 0 ? list_len : 1;
+        return false;
+    }
+    memcpy(select_list, list_start, (size_t)list_len);
+    select_list[list_len] = '\0';
+    str_trim_inplace(select_list);
+    if (strcmp(select_list, "*") == 0) {
+        *column_count = 0;
+        return true;
+    }
+    ListItem items[MAX_COLUMNS];
+    int count = split_list_items(sql, (int)(list_start - sql), list_len, items, MAX_COLUMNS);
+    if (count <= 0) {
+        snprintf(err_kind, err_kind_size, "Syntax Error");
+        snprintf(err_msg, err_msg_size, "Expected at least one SELECT column.");
+        *err_start = (int)(list_start - sql);
+        *err_len = list_len > 0 ? list_len : 1;
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        ColumnId col = column_from_name(items[i].text);
+        if (col == COL_UNKNOWN) {
+            snprintf(err_kind, err_kind_size, "Column Error");
+            snprintf(err_msg, err_msg_size, "Unknown column '%.120s' in SELECT list.", items[i].text);
+            *err_start = items[i].start;
+            *err_len = items[i].length;
+            return false;
+        }
+        columns[i] = col;
+    }
+    *column_count = count;
+    return true;
+}
+
 static ExecStatus execute_insert(Database *db, const char *sql, double begin) {
     /*
      * 지원 형식:
@@ -178,6 +228,16 @@ static ExecStatus execute_select(Database *db, const char *sql, double begin, bo
         print_error_timed("Syntax Error", "Expected FROM users.", sql, (int)(select_sql - sql), 6, begin);
         return EXEC_ERROR;
     }
+    ColumnId selected_columns[MAX_COLUMNS];
+    int selected_count = 0;
+    char err_kind[64], err_msg[512];
+    int err_start = 0, err_len = 1;
+    if (!parse_select_projection(sql, select_sql, from, selected_columns, &selected_count,
+                                 err_kind, sizeof(err_kind), err_msg, sizeof(err_msg),
+                                 &err_start, &err_len)) {
+        print_error_timed(err_kind, err_msg, sql, err_start, err_len, begin);
+        return EXEC_ERROR;
+    }
     const char *force = find_ci(from, "FORCE INDEX");
     const char *ignore = find_ci(from, "IGNORE INDEX");
     const char *where_kw = find_ci(from, "WHERE");
@@ -217,8 +277,6 @@ static ExecStatus execute_select(Database *db, const char *sql, double begin, bo
     QueryCondition cond;
     memset(&cond, 0, sizeof(cond));
     bool has_where = where_kw != NULL;
-    char err_kind[64], err_msg[512];
-    int err_start = 0, err_len = 1;
     if (has_where) {
         const char *cond_text = where_kw + 5;
         while (isspace((unsigned char)*cond_text)) cond_text++;
@@ -329,7 +387,8 @@ static ExecStatus execute_select(Database *db, const char *sql, double begin, bo
         index_used = "none";
     }
     double elapsed = now_sec() - begin;
-    print_record_table(matches, match_count, elapsed, access, index_used);
+    print_record_table_columns(matches, match_count, elapsed, access, index_used,
+                               selected_count > 0 ? selected_columns : NULL, selected_count);
     if (matches_owned) {
         if (range_result.items) {
             query_result_free(&range_result);
@@ -798,6 +857,31 @@ static ExecStatus execute_benchmark(Database *db, const char *sql, double begin)
     RecordRefList *id_found = primary ? bplus_tree_search(primary->tree, idkey) : NULL;
     double t_idx = now_sec() - t_idx0;
 
+    int probe_count = n < 100 ? n : 100;
+    volatile int repeated_full_matches = 0;
+    volatile int repeated_index_matches = 0;
+    double t_full_repeat0 = now_sec();
+    for (int pidx = 0; pidx < probe_count; pidx++) {
+        int probe_id = probe_count == 1 ? 1 : 1 + (int)(((long long)pidx * (n - 1)) / (probe_count - 1));
+        for (int i = 0; i < db->table.count; i++) {
+            if (db->table.rows[i]->id == probe_id) {
+                repeated_full_matches++;
+                break;
+            }
+        }
+    }
+    double t_full_repeat = now_sec() - t_full_repeat0;
+
+    double t_idx_repeat0 = now_sec();
+    for (int pidx = 0; pidx < probe_count; pidx++) {
+        int probe_id = probe_count == 1 ? 1 : 1 + (int)(((long long)pidx * (n - 1)) / (probe_count - 1));
+        RecordRefList *found = primary ? bplus_tree_search(primary->tree, make_int_key(probe_id)) : NULL;
+        if (found) {
+            repeated_index_matches += found->count;
+        }
+    }
+    double t_idx_repeat = now_sec() - t_idx_repeat0;
+
     printf("Performance Comparison\n");
     printf("--------------------------------------------------\n");
     printf("Records                    : %d\n", n);
@@ -819,6 +903,10 @@ static ExecStatus execute_benchmark(Database *db, const char *sql, double begin)
     printf("Index Build Time           : %.6f sec\n\n", t_build);
     printf("SELECT by id full scan     : %.6f sec (matched %d)\n", t_full, found_full);
     printf("SELECT by id B+ Tree       : %.6f sec (matched %d)\n", t_idx, id_found ? id_found->count : 0);
+    printf("Repeated full scan         : %.6f sec / %d probes (avg %.9f sec, matched %d)\n",
+           t_full_repeat, probe_count, t_full_repeat / probe_count, repeated_full_matches);
+    printf("Repeated B+ Tree search    : %.6f sec / %d probes (avg %.9f sec, matched %d)\n",
+           t_idx_repeat, probe_count, t_idx_repeat / probe_count, repeated_index_matches);
     printf("\nTotal Benchmark Time       : %.6f sec\n", now_sec() - begin);
     printf("--------------------------------------------------\n");
     return EXEC_OK;

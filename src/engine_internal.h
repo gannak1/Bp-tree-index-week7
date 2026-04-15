@@ -276,6 +276,9 @@ bool unquote_value(const char *src, char *dst, size_t dst_size);
 int split_list_items(const char *sql, int offset, int length, ListItem *items, int max_items);
 const char *find_matching_paren(const char *open);
 void print_record_table(Record **rows, int count, double elapsed, const char *access, const char *index_name);
+void print_record_table_columns(Record **rows, int count, double elapsed,
+                                const char *access, const char *index_name,
+                                const ColumnId *columns, int column_count);
 void query_condition_free(QueryCondition *cond);
 bool record_matches_condition(Record *r, const QueryCondition *cond);
 bool query_result_init(QueryResult *result, int initial_capacity);

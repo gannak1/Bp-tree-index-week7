@@ -166,23 +166,66 @@ static void print_cell_string(const char *value, int width) {
     printf("%.*s~", width - 1, value);
 }
 
-static void print_separator(int id_w, int name_w, int age_w, int email_w) {
+static int column_max_width(ColumnId col) {
+    switch (col) {
+        case COL_NAME: return 32;
+        case COL_EMAIL: return 48;
+        default: return 32;
+    }
+}
+
+static bool column_is_numeric(ColumnId col) {
+    return col == COL_ID || col == COL_AGE;
+}
+
+static void record_column_value(Record *r, ColumnId col, char *buf, size_t buf_size) {
+    switch (col) {
+        case COL_ID:
+            snprintf(buf, buf_size, "%d", r->id);
+            break;
+        case COL_NAME:
+            safe_copy(buf, buf_size, r->name);
+            break;
+        case COL_AGE:
+            snprintf(buf, buf_size, "%d", r->age);
+            break;
+        case COL_EMAIL:
+            safe_copy(buf, buf_size, r->email);
+            break;
+        default:
+            safe_copy(buf, buf_size, "");
+            break;
+    }
+}
+
+static void print_projection_separator(const int *widths, int column_count) {
     printf("+");
-    for (int i = 0; i < id_w + 2; i++) putchar('-');
-    printf("+");
-    for (int i = 0; i < name_w + 2; i++) putchar('-');
-    printf("+");
-    for (int i = 0; i < age_w + 2; i++) putchar('-');
-    printf("+");
-    for (int i = 0; i < email_w + 2; i++) putchar('-');
-    printf("+\n");
+    for (int c = 0; c < column_count; c++) {
+        for (int i = 0; i < widths[c] + 2; i++) {
+            putchar('-');
+        }
+        printf("+");
+    }
+    printf("\n");
 }
 
 void print_record_table(Record **rows, int count, double elapsed, const char *access, const char *index_name) {
+    ColumnId all_columns[] = {COL_ID, COL_NAME, COL_AGE, COL_EMAIL};
+    print_record_table_columns(rows, count, elapsed, access, index_name, all_columns, MAX_COLUMNS);
+}
+
+void print_record_table_columns(Record **rows, int count, double elapsed,
+                                const char *access, const char *index_name,
+                                const ColumnId *columns, int column_count) {
     /*
      * SELECT 결과를 MySQL 스타일 표로 출력합니다.
      * 출력 전 모든 row를 훑어 컬럼 폭을 계산하므로 값 길이가 달라도 표가 크게 깨지지 않습니다.
      */
+    if (!columns || column_count <= 0) {
+        ColumnId all_columns[] = {COL_ID, COL_NAME, COL_AGE, COL_EMAIL};
+        columns = all_columns;
+        column_count = MAX_COLUMNS;
+    }
     if (count == 0) {
         printf("Empty set (%.6f sec)\n", elapsed);
         if (access) {
@@ -191,41 +234,46 @@ void print_record_table(Record **rows, int count, double elapsed, const char *ac
         }
         return;
     }
-    const int max_name_w = 32;
-    const int max_email_w = 48;
-    int id_w = 2;
-    int name_w = 4;
-    int age_w = 3;
-    int email_w = 5;
+    int widths[MAX_COLUMNS];
+    for (int c = 0; c < column_count; c++) {
+        widths[c] = (int)strlen(column_name(columns[c]));
+    }
     for (int i = 0; i < count; i++) {
-        /* 출력 폭 계산 단계. name/email은 최대 폭까지만 반영합니다. */
         Record *r = rows[i];
-        int id_len = digits_int(r->id);
-        int age_len = digits_int(r->age);
-        int name_len = bounded_strlen(r->name, max_name_w);
-        int email_len = bounded_strlen(r->email, max_email_w);
-        if (id_len > id_w) id_w = id_len;
-        if (age_len > age_w) age_w = age_len;
-        if (name_len > name_w) name_w = name_len;
-        if (email_len > email_w) email_w = email_len;
+        for (int c = 0; c < column_count; c++) {
+            char value[160];
+            record_column_value(r, columns[c], value, sizeof(value));
+            int value_len = column_is_numeric(columns[c])
+                ? digits_int(atoi(value))
+                : bounded_strlen(value, column_max_width(columns[c]));
+            if (value_len > widths[c]) {
+                widths[c] = value_len;
+            }
+        }
     }
 
-    print_separator(id_w, name_w, age_w, email_w);
-    printf("| %-*s | %-*s | %-*s | %-*s |\n", id_w, "id", name_w, "name", age_w, "age", email_w, "email");
-    print_separator(id_w, name_w, age_w, email_w);
+    print_projection_separator(widths, column_count);
+    for (int c = 0; c < column_count; c++) {
+        printf("| %-*s ", widths[c], column_name(columns[c]));
+    }
+    printf("|\n");
+    print_projection_separator(widths, column_count);
     for (int i = 0; i < count; i++) {
         Record *r = rows[i];
-        char id_buf[32];
-        char age_buf[32];
-        snprintf(id_buf, sizeof(id_buf), "%d", r->id);
-        snprintf(age_buf, sizeof(age_buf), "%d", r->age);
-        printf("| %*s | ", id_w, id_buf);
-        print_cell_string(r->name, name_w);
-        printf(" | %*s | ", age_w, age_buf);
-        print_cell_string(r->email, email_w);
-        printf(" |\n");
+        for (int c = 0; c < column_count; c++) {
+            char value[160];
+            record_column_value(r, columns[c], value, sizeof(value));
+            if (column_is_numeric(columns[c])) {
+                printf("| %*s ", widths[c], value);
+            } else {
+                printf("| ");
+                print_cell_string(value, widths[c]);
+                printf(" ");
+            }
+        }
+        printf("|\n");
     }
-    print_separator(id_w, name_w, age_w, email_w);
+    print_projection_separator(widths, column_count);
     printf("%d row%s in set (%.6f sec)\n", count, count == 1 ? "" : "s", elapsed);
     if (access) {
         printf("Access Type: %s\n", access);
