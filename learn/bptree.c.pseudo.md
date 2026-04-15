@@ -124,3 +124,157 @@ range scan 지원:
 - leaf끼리 `next`로 연결되어 있어서 `BETWEEN`, `<`, `>` 같은 범위 검색이 빠릅니다.
 - 이 구현은 디스크 페이지 대신 메모리 구조체를 사용하지만, 노드 크기 4KB 제한을 둬서 DBMS 느낌을 살렸습니다.
 
+## B+Tree 삽입을 더 자세히 보기
+
+### 1. leaf에 공간이 있는 경우
+
+```text
+현재 leaf:
+    keys = [10, 20, 40]
+
+삽입 key:
+    30
+
+처리:
+    lower_bound(30)을 수행하면 위치 2를 얻는다.
+    뒤의 key들을 한 칸씩 밀어낸다.
+    30을 위치 2에 넣는다.
+
+결과:
+    keys = [10, 20, 30, 40]
+```
+
+이 경우 부모 노드에는 아무 변화가 없습니다.
+
+### 2. leaf에 같은 key가 이미 있는 경우
+
+```text
+만약 unique index라면:
+    같은 key 삽입은 허용되지 않는다.
+    duplicate = true로 표시하고 실패 반환
+
+만약 non-unique index라면:
+    key는 하나만 유지한다.
+    해당 key의 RecordRefList에 record 포인터를 추가한다.
+```
+
+예:
+
+```text
+name index에서 name = "kim"인 row가 여러 개 있을 수 있다.
+
+leaf key:
+    "kim"
+
+value:
+    [record pointer 1, record pointer 7, record pointer 22]
+```
+
+### 3. leaf가 가득 차서 split되는 경우
+
+```text
+leaf 최대 key 수를 넘으면 split이 필요하다.
+
+삽입 후 임시 상태:
+    left leaf keys = [10, 20, 30, 40, 50]
+
+split 기준:
+    절반은 기존 leaf에 남긴다.
+    나머지 절반은 새 right leaf로 옮긴다.
+
+결과:
+    left leaf keys  = [10, 20]
+    right leaf keys = [30, 40, 50]
+
+promoted key:
+    right leaf의 첫 key인 30을 부모에게 올린다.
+```
+
+leaf 연결도 함께 갱신합니다.
+
+```text
+분할 전:
+    left -> old_next
+
+분할 후:
+    left -> right -> old_next
+```
+
+이 연결 덕분에 범위 검색은 leaf를 순서대로 훑을 수 있습니다.
+
+### 4. internal node split
+
+```text
+child split 결과로 promoted key가 올라오면 internal node에 삽입한다.
+
+internal node도 key가 너무 많아지면:
+    가운데 key를 부모로 올린다.
+    왼쪽 key들은 기존 node에 남긴다.
+    오른쪽 key들은 새 right internal node로 이동한다.
+
+주의:
+    leaf split에서는 promoted key가 오른쪽 leaf에도 남는다.
+    internal split에서는 promoted key가 부모로 올라가고 현재 노드에서는 빠진다.
+```
+
+## 검색 경로 예시
+
+```text
+검색 key = 75
+
+root internal keys:
+    [30, 60, 90]
+
+child 선택:
+    75는 60보다 크고 90보다 작다.
+    따라서 children[2]로 내려간다.
+
+다음 internal 또는 leaf에서도 같은 방식 반복
+
+leaf에 도착하면:
+    lower_bound(75)
+    key가 실제로 75인지 확인
+```
+
+복잡도:
+
+```text
+단일 검색:
+    O(log N)
+
+범위 검색:
+    O(log N + K)
+    // K는 결과 row 수
+```
+
+## 왜 leaf에만 record를 저장하는가
+
+```text
+B+Tree:
+    internal node는 길 안내용 key만 가진다.
+    실제 데이터 pointer는 leaf node에만 둔다.
+
+장점:
+    1. 모든 실제 데이터가 leaf에 있으므로 순차 접근이 쉽다.
+    2. leaf를 linked list로 연결하면 range scan이 빠르다.
+    3. internal node는 더 많은 key를 담아 tree height를 낮출 수 있다.
+```
+
+## 이 구현에서 저장하는 값
+
+```text
+B+Tree key:
+    id, age 같은 int
+    name, email 같은 string
+
+B+Tree value:
+    Record* pointer
+
+파일에 저장되는 것:
+    Record 자체는 data/users.data에 저장
+    B+Tree 노드는 저장하지 않음
+
+재시작 시:
+    storage.c가 Record를 읽음
+    rebuild_indexes()가 모든 Record를 다시 B+Tree에 삽입
+```

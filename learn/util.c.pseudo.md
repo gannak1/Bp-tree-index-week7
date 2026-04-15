@@ -77,3 +77,127 @@
 - 타입이 int인지 string인지에 따라 비교 방식이 달라집니다.
 - 에러 출력은 SQL 위치를 표시하므로 디버깅과 과제 시연에 유리합니다.
 
+## 키 관련 함수 상세
+
+### make_int_key(v)
+
+```text
+목적:
+    정수 컬럼 값을 B+Tree에서 비교 가능한 IndexKey로 감싼다.
+
+결과:
+    key.type = KEY_INT
+    key.value.int_value = v
+```
+
+### make_string_key_borrowed(s)
+
+```text
+목적:
+    문자열 컬럼 값을 IndexKey 형태로 만든다.
+
+주의:
+    borrowed라는 이름처럼 문자열 메모리를 새로 소유하지 않는다.
+    Record 안의 name/email 포인터를 잠시 참조하는 용도다.
+
+언제 쓰는가:
+    key_from_record()에서 record->name, record->email을 key로 만들 때 사용한다.
+```
+
+### key_clone(src, out)
+
+```text
+목적:
+    B+Tree 노드 안에 key를 오래 저장해야 할 때 사용한다.
+
+처리:
+    INT key:
+        값만 복사하면 된다.
+
+    STRING key:
+        문자열을 xstrdup으로 새로 할당한다.
+        B+Tree 노드가 그 문자열을 소유한다.
+
+왜 필요한가:
+    borrowed string은 원본 Record 메모리에 의존한다.
+    B+Tree 내부 key는 노드가 살아 있는 동안 안정적으로 유지되어야 하므로 clone이 필요하다.
+```
+
+### key_free(k)
+
+```text
+목적:
+    key_clone으로 복사한 string key를 해제한다.
+
+처리:
+    key.type이 KEY_STRING이면:
+        string_value free
+
+    key 전체를 0으로 초기화
+```
+
+### key_compare(a, b)
+
+```text
+목적:
+    B+Tree의 모든 정렬 기준을 제공한다.
+
+처리:
+    둘 다 INT:
+        int_value 크기 비교
+
+    둘 다 STRING:
+        strcmp 결과 사용
+
+반환:
+    a < b : 음수
+    a = b : 0
+    a > b : 양수
+
+사용 위치:
+    leaf_lower_bound()
+    internal_child_index()
+    bplus_tree_search()
+    condition_matches_key()
+```
+
+## 문자열 유틸이 중요한 이유
+
+```text
+SQL 입력은 사용자가 직접 치는 문자열이다.
+따라서 다음 문제가 항상 생긴다.
+
+    - 앞뒤 공백
+    - 대소문자 차이
+    - 세미콜론
+    - 따옴표
+    - 너무 긴 입력
+
+util.c는 이런 문제를 처리하는 공통 기반이다.
+이 기반이 있어야 executor/query/storage가 같은 방식으로 문자열을 다룰 수 있다.
+```
+
+## 에러 위치 표시 원리
+
+```text
+print_error_timed(kind, message, sql, start, length):
+    1. kind와 message 출력
+    2. SQL 원문 출력
+    3. start 위치까지 공백 출력
+    4. length만큼 ^ 출력
+    5. 실행 시간 출력
+
+예:
+    SQL:
+        SELECT * FROM users WHERE age = 'abc';
+
+    start:
+        'abc'가 시작하는 위치
+
+    length:
+        5
+
+    출력:
+        SELECT * FROM users WHERE age = 'abc';
+                                        ^^^^^
+```
