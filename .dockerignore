@@ -1,0 +1,15 @@
+.git
+.devcontainer
+.vscode
+.vscode copy
+before_data
+*.exe
+src/*.o
+tests/*.exe
+generated_records.sql
+tmp_*.sql
+image.png
+image-1.png
+ad.md
+asd.txt
+test.md
