@@ -4,6 +4,20 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * ast.c
+ *
+ * SQL 전체를 완전한 문법 트리로 만들지는 않고, 현재 과제 범위에 맞춰
+ * "명령 종류"를 구분하는 얇은 AST 계층을 제공합니다.
+ *
+ * 예:
+ *   SELECT ...       -> AST_SELECT
+ *   CREATE INDEX ... -> AST_CREATE_INDEX
+ *   BENCHMARK ...    -> AST_BENCHMARK
+ *
+ * 세부 WHERE 조건은 query.c의 QueryCondition이 담당합니다.
+ */
+
 static int ci_char(int c) {
     return tolower((unsigned char)c);
 }
@@ -64,6 +78,7 @@ static void trim_inplace(char *s) {
 }
 
 static void strip_optional_semicolon(char *sql) {
+    /* REPL 입력은 보통 세미콜론으로 끝나므로 실행 전에 제거합니다. */
     trim_inplace(sql);
     size_t len = strlen(sql);
     if (len > 0 && sql[len - 1] == ';') {
@@ -73,6 +88,10 @@ static void strip_optional_semicolon(char *sql) {
 }
 
 bool sql_ast_parse(const char *input, SqlAst *ast, char *err, size_t err_size) {
+    /*
+     * 입력 SQL을 정리하고 AstKind로 분류합니다.
+     * ast.sql에는 앞뒤 공백과 마지막 세미콜론이 제거된 SQL이 저장됩니다.
+     */
     memset(ast, 0, sizeof(*ast));
     ast->kind = AST_EMPTY;
     if (!input) {
@@ -88,6 +107,10 @@ bool sql_ast_parse(const char *input, SqlAst *ast, char *err, size_t err_size) {
         ast->kind = AST_EMPTY;
         return true;
     }
+    /*
+     * 긴 키워드를 짧은 키워드보다 먼저 검사해야 합니다.
+     * 예를 들어 CREATE UNIQUE INDEX는 CREATE INDEX보다 먼저 확인해야 unique 정보를 잃지 않습니다.
+     */
     if (str_casecmp_local(ast->sql, "EXIT") == 0 || str_casecmp_local(ast->sql, "QUIT") == 0) {
         ast->kind = AST_EXIT;
     } else if (starts_with_ci(ast->sql, "INSERT")) {

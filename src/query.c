@@ -1,6 +1,17 @@
 #include "engine_internal.h"
 
+/*
+ * query.c
+ *
+ * SELECT 실행에 필요한 보조 로직을 담당합니다.
+ * - WHERE 조건 문자열을 QueryCondition으로 변환
+ * - SELECT 결과 버퍼 관리
+ * - B+Tree range scan 결과 수집
+ * - MySQL 스타일 표 출력
+ */
+
 bool parse_int_value(const char *s, int *out) {
+    /* INT 컬럼 값 파싱. 따옴표로 감싼 숫자도 허용하지만, 숫자가 아닌 문자가 남으면 실패합니다. */
     char buf[256];
     safe_copy(buf, sizeof(buf), s);
     str_trim_inplace(buf);
@@ -32,6 +43,7 @@ bool parse_int_value(const char *s, int *out) {
 }
 
 bool unquote_value(const char *src, char *dst, size_t dst_size) {
+    /* 문자열 값의 바깥 따옴표를 제거하고, escape된 따옴표를 실제 문자로 복원합니다. */
     char buf[512];
     safe_copy(buf, sizeof(buf), src);
     str_trim_inplace(buf);
@@ -56,6 +68,10 @@ bool unquote_value(const char *src, char *dst, size_t dst_size) {
 }
 
 int split_list_items(const char *sql, int offset, int length, ListItem *items, int max_items) {
+    /*
+     * INSERT 컬럼/값 리스트, BENCHMARK INDEX 리스트를 쉼표 기준으로 나눕니다.
+     * 단, 'kim,lee'처럼 따옴표 안에 있는 쉼표는 분리 기준이 아닙니다.
+     */
     int count = 0;
     int start = offset;
     bool in_quote = false;
@@ -94,6 +110,10 @@ int split_list_items(const char *sql, int offset, int length, ListItem *items, i
 }
 
 const char *find_matching_paren(const char *open) {
+    /*
+     * 여는 괄호에 대응하는 닫는 괄호를 찾습니다.
+     * 문자열 안의 괄호는 실제 SQL 구조가 아니므로 무시합니다.
+     */
     int depth = 0;
     bool in_quote = false;
     char quote = '\0';
@@ -133,6 +153,7 @@ static int bounded_strlen(const char *s, int max_width) {
 }
 
 static void print_cell_string(const char *value, int width) {
+    /* 긴 문자열 때문에 표가 옆으로 밀리지 않도록 width를 넘으면 마지막에 ~를 붙여 자릅니다. */
     int len = (int)strlen(value);
     if (len <= width) {
         printf("%-*s", width, value);
@@ -158,6 +179,10 @@ static void print_separator(int id_w, int name_w, int age_w, int email_w) {
 }
 
 void print_record_table(Record **rows, int count, double elapsed, const char *access, const char *index_name) {
+    /*
+     * SELECT 결과를 MySQL 스타일 표로 출력합니다.
+     * 출력 전 모든 row를 훑어 컬럼 폭을 계산하므로 값 길이가 달라도 표가 크게 깨지지 않습니다.
+     */
     if (count == 0) {
         printf("Empty set (%.6f sec)\n", elapsed);
         if (access) {
@@ -173,6 +198,7 @@ void print_record_table(Record **rows, int count, double elapsed, const char *ac
     int age_w = 3;
     int email_w = 5;
     for (int i = 0; i < count; i++) {
+        /* 출력 폭 계산 단계. name/email은 최대 폭까지만 반영합니다. */
         Record *r = rows[i];
         int id_len = digits_int(r->id);
         int age_len = digits_int(r->age);
@@ -208,6 +234,7 @@ void print_record_table(Record **rows, int count, double elapsed, const char *ac
 }
 
 void query_condition_free(QueryCondition *cond) {
+    /* QueryCondition이 소유한 string key 메모리를 해제합니다. */
     if (!cond) {
         return;
     }
@@ -221,6 +248,7 @@ void query_condition_free(QueryCondition *cond) {
 }
 
 static bool condition_matches_key(const QueryCondition *cond, IndexKey key) {
+    /* key가 lower/upper 경계 조건을 만족하는지 검사합니다. */
     if (cond->has_lower) {
         int cmp = key_compare(key, cond->lower);
         if (cmp < 0 || (cmp == 0 && !cond->lower_inclusive)) {
@@ -237,11 +265,13 @@ static bool condition_matches_key(const QueryCondition *cond, IndexKey key) {
 }
 
 bool record_matches_condition(Record *r, const QueryCondition *cond) {
+    /* Full Table Scan에서 Record 하나가 WHERE 조건에 맞는지 확인합니다. */
     IndexKey rk = key_from_record(cond->column, r);
     return condition_matches_key(cond, rk);
 }
 
 bool query_result_init(QueryResult *result, int initial_capacity) {
+    /* range scan 결과는 row 수를 미리 알 수 없으므로 동적 배열로 관리합니다. */
     result->count = 0;
     result->capacity = initial_capacity > 0 ? initial_capacity : 16;
     result->items = (Record **)malloc((size_t)result->capacity * sizeof(Record *));
@@ -256,6 +286,7 @@ void query_result_free(QueryResult *result) {
 }
 
 bool query_result_add(QueryResult *result, Record *record) {
+    /* 결과 배열이 가득 차면 2배로 확장합니다. */
     if (result->count == result->capacity) {
         int new_cap = result->capacity * 2;
         Record **new_items = (Record **)realloc(result->items, (size_t)new_cap * sizeof(Record *));
@@ -270,6 +301,13 @@ bool query_result_add(QueryResult *result, Record *record) {
 }
 
 bool bplus_tree_collect_range(BPlusTree *tree, const QueryCondition *cond, QueryResult *result) {
+    /*
+     * B+Tree Range Scan.
+     *
+     * 1. lower bound가 있으면 그 key가 들어갈 leaf에서 시작합니다.
+     * 2. lower bound가 없으면 가장 왼쪽 leaf에서 시작합니다.
+     * 3. leaf->next를 따라가며 upper bound를 넘기 전까지 결과를 모읍니다.
+     */
     BPlusNode *leaf = cond->has_lower ? bplus_tree_find_leaf(tree, cond->lower) : bplus_tree_leftmost_leaf(tree);
     while (leaf) {
         int start = 0;
@@ -281,6 +319,7 @@ bool bplus_tree_collect_range(BPlusTree *tree, const QueryCondition *cond, Query
             if (cond->has_upper) {
                 int upper_cmp = key_compare(key, cond->upper);
                 if (upper_cmp > 0 || (upper_cmp == 0 && !cond->upper_inclusive)) {
+                    /* leaf key는 정렬되어 있으므로 upper를 넘으면 뒤쪽 leaf도 볼 필요가 없습니다. */
                     return true;
                 }
             }
@@ -304,6 +343,7 @@ static bool parse_condition_value(const char *sql, ColumnId col, const char *val
                                   int *err_start, int *err_len,
                                   char *err_kind, size_t err_kind_size,
                                   char *err_msg, size_t err_msg_size) {
+    /* WHERE 오른쪽 값을 컬럼 타입에 맞는 IndexKey로 변환합니다. 타입 오류 위치도 여기서 계산합니다. */
     char valbuf[512];
     safe_copy(valbuf, sizeof(valbuf), value_text);
     str_trim_inplace(valbuf);
@@ -341,6 +381,10 @@ static bool parse_condition_value(const char *sql, ColumnId col, const char *val
 }
 
 static const char *find_operator_outside_quotes(const char *s, const char **op_out, int *op_len) {
+    /*
+     * WHERE name = 'a >= b' 같은 입력에서 문자열 내부의 >=를 연산자로 오해하면 안 됩니다.
+     * 따라서 현재 위치가 따옴표 안인지 추적하면서, 따옴표 밖 연산자만 인정합니다.
+     */
     bool in_quote = false;
     char quote = '\0';
     for (const char *p = s; *p; p++) {
@@ -374,6 +418,7 @@ static bool parse_column_name_slice(const char *sql, const char *start, int len,
                                     ColumnId *col_out, int *err_start, int *err_len,
                                     char *err_kind, size_t err_kind_size,
                                     char *err_msg, size_t err_msg_size) {
+    /* WHERE 왼쪽 컬럼명을 잘라 ColumnId로 변환하고, 모르는 컬럼이면 에러 위치를 기록합니다. */
     while (len > 0 && isspace((unsigned char)*start)) {
         start++;
         len--;
@@ -407,9 +452,21 @@ bool parse_condition(const char *sql, const char *where, QueryCondition *cond,
                             int *err_start, int *err_len,
                             char *err_kind, size_t err_kind_size,
                             char *err_msg, size_t err_msg_size) {
+    /*
+     * WHERE 조건을 내부 표현인 QueryCondition으로 변환합니다.
+     *
+     * 지원:
+     *   column = value
+     *   column < value
+     *   column <= value
+     *   column > value
+     *   column >= value
+     *   column BETWEEN lower AND upper
+     */
     memset(cond, 0, sizeof(*cond));
     const char *between = find_ci(where, " BETWEEN ");
     if (between) {
+        /* BETWEEN은 두 개의 경계값을 가지므로 일반 비교 연산자보다 먼저 처리합니다. */
         ColumnId col = COL_UNKNOWN;
         if (!parse_column_name_slice(sql, where, (int)(between - where), &col,
                                      err_start, err_len, err_kind, err_kind_size, err_msg, err_msg_size)) {
@@ -448,6 +505,7 @@ bool parse_condition(const char *sql, const char *where, QueryCondition *cond,
         cond->op = OP_BETWEEN;
         cond->lower_inclusive = true;
         cond->upper_inclusive = true;
+        /* BETWEEN 200 AND 100처럼 뒤집힌 범위는 명확한 문법 오류로 처리합니다. */
         if (key_compare(cond->lower, cond->upper) > 0) {
             snprintf(err_kind, err_kind_size, "Syntax Error");
             snprintf(err_msg, err_msg_size, "BETWEEN lower bound must be less than or equal to upper bound.");
@@ -461,6 +519,7 @@ bool parse_condition(const char *sql, const char *where, QueryCondition *cond,
 
     const char *op = NULL;
     int op_len = 0;
+    /* BETWEEN이 아니라면 =, <, <=, >, >= 중 하나를 찾습니다. */
     if (!find_operator_outside_quotes(where, &op, &op_len)) {
         snprintf(err_kind, err_kind_size, "Syntax Error");
         snprintf(err_msg, err_msg_size, "Expected one of '=', '<', '<=', '>', '>=', or BETWEEN.");
@@ -482,6 +541,7 @@ bool parse_condition(const char *sql, const char *where, QueryCondition *cond,
     }
     cond->column = col;
     if (op_len == 1 && *op == '=') {
+        /* '=' 조건은 lower와 upper가 같은 닫힌 범위로 표현하면 단일 검색/공통 비교가 쉬워집니다. */
         cond->op = OP_EQ;
         cond->lower = value;
         cond->upper = value;
@@ -498,21 +558,25 @@ bool parse_condition(const char *sql, const char *where, QueryCondition *cond,
         cond->lower_inclusive = true;
         cond->upper_inclusive = true;
     } else if (op_len == 1 && *op == '>') {
+        /* 초과 조건: lower는 존재하지만 inclusive가 false입니다. */
         cond->op = OP_GT;
         cond->lower = value;
         cond->has_lower = true;
         cond->lower_inclusive = false;
     } else if (op_len == 2 && op[0] == '>' && op[1] == '=') {
+        /* 이상 조건: lower inclusive입니다. */
         cond->op = OP_GE;
         cond->lower = value;
         cond->has_lower = true;
         cond->lower_inclusive = true;
     } else if (op_len == 1 && *op == '<') {
+        /* 미만 조건: upper exclusive입니다. */
         cond->op = OP_LT;
         cond->upper = value;
         cond->has_upper = true;
         cond->upper_inclusive = false;
     } else if (op_len == 2 && op[0] == '<' && op[1] == '=') {
+        /* 이하 조건: upper inclusive입니다. */
         cond->op = OP_LE;
         cond->upper = value;
         cond->has_upper = true;
