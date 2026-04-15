@@ -1,9 +1,21 @@
-﻿#include "sql_processor.h"
+#include "sql_processor.h"
 
-#include <direct.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define SP_MKDIR(path) _mkdir(path)
+#define SP_PATH_SEP '\\'
+#define SP_PATH_SEP_STR "\\"
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#define SP_MKDIR(path) mkdir(path, 0775)
+#define SP_PATH_SEP '/'
+#define SP_PATH_SEP_STR "/"
+#endif
 
 /* 메타 CSV의 타입 문자열을 내부 ColumnType enum으로 변환한다. */
 static int parse_column_type(const char *text, ColumnType *type, Status *status) {
@@ -45,11 +57,23 @@ int load_table_meta(const char *schema_name, const char *table_name, TableMeta *
     int column_count = 0;
     int offset = 0;
 
-    memset(meta, 0, sizeof(*meta)); // meat에 모두 0으로 채움
-    snprintf(meta->schema_name, sizeof(meta->schema_name), "%s", schema_name); // 각각 이름을 넣음
-    snprintf(meta->table_name, sizeof(meta->table_name), "%s", table_name); // 각각 이름을 넣음
-    snprintf(meta->meta_file_path, sizeof(meta->meta_file_path), "meta\\%s\\%s.schema.csv", schema_name, table_name); // 각각 이름을 넣음
-    snprintf(meta->data_file_path, sizeof(meta->data_file_path), "data\\%s\\%s.dat", schema_name, table_name); // 각각 이름을 넣음
+    memset(meta, 0, sizeof(*meta));
+    snprintf(meta->schema_name, sizeof(meta->schema_name), "%s", schema_name);
+    snprintf(meta->table_name, sizeof(meta->table_name), "%s", table_name);
+    snprintf(
+        meta->meta_file_path,
+        sizeof(meta->meta_file_path),
+        "meta" SP_PATH_SEP_STR "%s" SP_PATH_SEP_STR "%s.schema.csv",
+        schema_name,
+        table_name
+    );
+    snprintf(
+        meta->data_file_path,
+        sizeof(meta->data_file_path),
+        "data" SP_PATH_SEP_STR "%s" SP_PATH_SEP_STR "%s.dat",
+        schema_name,
+        table_name
+    );
 
     file = fopen(meta->meta_file_path, "r");
     if (file == NULL) {
@@ -135,7 +159,7 @@ int ensure_parent_directory(const char *file_path, Status *status) {
     char *next;
 
     snprintf(path, sizeof(path), "%s", file_path);
-    slash = strrchr(path, '\\');
+    slash = strrchr(path, SP_PATH_SEP);
     if (slash == NULL) {
         return 1;
     }
@@ -143,17 +167,17 @@ int ensure_parent_directory(const char *file_path, Status *status) {
 
     segment = path;
     while (*segment != '\0') {
-        next = strchr(segment, '\\');
+        next = strchr(segment, SP_PATH_SEP);
         if (next != NULL) {
             *next = '\0';
         }
 
         if (current[0] != '\0') {
-            strncat(current, "\\", sizeof(current) - strlen(current) - 1);
+            strncat(current, SP_PATH_SEP_STR, sizeof(current) - strlen(current) - 1);
         }
         strncat(current, segment, sizeof(current) - strlen(current) - 1);
 
-        if (_mkdir(current) != 0 && errno != EEXIST) {
+        if (SP_MKDIR(current) != 0 && errno != EEXIST) {
             snprintf(status->message, sizeof(status->message), "Execution error: cannot create directory '%s'", current);
             return 0;
         }
@@ -161,7 +185,7 @@ int ensure_parent_directory(const char *file_path, Status *status) {
         if (next == NULL) {
             break;
         }
-        *next = '\\';
+        *next = SP_PATH_SEP;
         segment = next + 1;
     }
 

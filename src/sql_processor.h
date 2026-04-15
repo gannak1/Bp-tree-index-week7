@@ -190,6 +190,8 @@ int ensure_parent_directory(const char *file_path, Status *status);
 int build_id_index_from_data(ExecutionContext *context, Status *status);
 int append_binary_row(ExecutionContext *context, ASTNode *root, int *inserted_id, Status *status);
 int execute_select(ExecutionContext *context, ASTNode *root, Status *status);
+int prepare_execution_context_for_table(const char *schema_name, const char *table_name, Status *status);
+int prepare_execution_context(ASTNode *root, Status *status);
 int execute_statement(ASTNode *root, Status *status);
 
 #endif

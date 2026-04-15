@@ -61,14 +61,24 @@ static int ensure_execution_context(const TableMeta *meta, Status *status) {
     return 1;
 }
 
-/* parser가 만든 AST 루트 노드를 보고 INSERT 또는 SELECT 실행기로 분기한다. */
-int execute_statement(ASTNode *root, Status *status) {
+/* schema/table 이름으로 현재 실행 컨텍스트와 id 인덱스를 미리 준비한다. */
+int prepare_execution_context_for_table(const char *schema_name, const char *table_name, Status *status) {
     TableMeta meta;
+
+    memset(&meta, 0, sizeof(meta));
+
+    if (!load_table_meta(schema_name, table_name, &meta, status)) {
+        return 0;
+    }
+
+    return ensure_execution_context(&meta, status);
+}
+
+/* AST에서 대상 테이블을 찾아 현재 실행 컨텍스트와 id 인덱스를 미리 준비한다. */
+int prepare_execution_context(ASTNode *root, Status *status) {
     ASTNode *table_node;
     char *schema_name;
     char *table_name;
-
-    memset(&meta, 0, sizeof(meta));
 
     if (root == NULL) {
         snprintf(status->message, sizeof(status->message), "Execution error: empty AST root");
@@ -81,10 +91,12 @@ int execute_statement(ASTNode *root, Status *status) {
         return 0;
     }
 
-    if (!load_table_meta(schema_name, table_name, &meta, status)) {
-        return 0;
-    }
-    if (!ensure_execution_context(&meta, status)) {
+    return prepare_execution_context_for_table(schema_name, table_name, status);
+}
+
+/* parser가 만든 AST 루트 노드를 보고 INSERT 또는 SELECT 실행기로 분기한다. */
+int execute_statement(ASTNode *root, Status *status) {
+    if (!prepare_execution_context(root, status)) {
         return 0;
     }
 

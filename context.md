@@ -202,6 +202,35 @@ INSERT INTO users VALUES ('Kim', 20);
 - `BETWEEN` 문법 추가
 - 대량 INSERT SQL 생성기 추가
 - 샘플 `users.dat`를 중복 `id` 없는 상태로 정리
+- 루트 `Dockerfile`과 `.dockerignore` 추가
+
+## Docker 실행 방식
+
+도커 전용 실행을 위해 루트 `Dockerfile`을 추가했다.
+
+- build stage에서 `sql_processor_bptree`를 컴파일한다.
+- runtime stage에서 `/usr/local/bin/sql_processor_bptree`를 실행 파일로 사용한다.
+- 기본 명령은 `--repl`이다.
+- 컨테이너 내부 작업 디렉터리는 `/workspace`다.
+
+예상 사용 방식:
+
+```powershell
+docker build -t sql-insert-select .
+docker run --rm -it sql-insert-select
+docker run --rm -it sql-insert-select sample_select.sql
+docker run --rm -it -v ${PWD}:/workspace sql-insert-select sample_insert.sql
+docker run --rm -it --entrypoint python3 -v ${PWD}:/workspace sql-insert-select /workspace/tools/generate_records.py --count 1000000 --output /workspace/generated_records.sql
+```
+
+## Dev Container 메모
+
+- `.devcontainer/Dockerfile`을 Ubuntu 24.04 기준으로 정리했다.
+- 기존 `RUN apt install clang-format` 줄은 비대화식 빌드에서 멈출 수 있어서 `apt-get install -y` 묶음으로 통합했다.
+- 현재 사용자가 보고한 VS Code Dev Container 실패의 1차 원인은 Docker Desktop 빌드 과정에서 다음 경로 접근 권한이 막히는 문제다.
+  - `C:\Users\gi676\.docker\config.json`
+  - `C:\Users\gi676\.docker\buildx\instances`
+- 즉 devcontainer가 막히는 원인은 저장소 코드만의 문제라기보다 로컬 Docker 설정 권한 문제와 겹쳐 있다.
 
 ## 현재 확인된 상태
 
