@@ -135,6 +135,14 @@ typedef struct {
     char message[256];
 } Status;
 
+/* 실행 경로를 간단히 분류해 성능 로그와 디버깅에 활용한다. */
+typedef enum {
+    EXECUTION_PATH_UNKNOWN,
+    EXECUTION_PATH_INSERT,
+    EXECUTION_PATH_INDEXED,
+    EXECUTION_PATH_FULL_SCAN
+} ExecutionPath;
+
 /* B+ 트리의 노드 하나다. leaf는 key->offset을, internal은 key->child를 가진다. */
 typedef struct BPTreeNode {
     int is_leaf;                                 /* 1이면 leaf node, 0이면 internal node */
@@ -159,6 +167,7 @@ typedef struct {
     BPTree id_index;      /* id -> row_offset B+ 트리 인덱스 */
     int record_count;     /* 현재 data 파일 기준 row 수 */
     int is_loaded;        /* 컨텍스트가 유효하게 초기화됐는지 여부 */
+    ExecutionPath last_execution_path; /* 마지막 SQL이 실제로 사용한 접근 경로 */
 } ExecutionContext;
 
 /* 문자열 유틸 함수들 */
@@ -193,5 +202,7 @@ int execute_select(ExecutionContext *context, ASTNode *root, Status *status);
 int prepare_execution_context_for_table(const char *schema_name, const char *table_name, Status *status);
 int prepare_execution_context(ASTNode *root, Status *status);
 int execute_statement(ASTNode *root, Status *status);
+ExecutionPath get_last_execution_path(void);
+const char *execution_path_to_text(ExecutionPath path);
 
 #endif

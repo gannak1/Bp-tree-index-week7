@@ -4,6 +4,24 @@
 
 static ExecutionContext g_context;
 
+const char *execution_path_to_text(ExecutionPath path) {
+    switch (path) {
+    case EXECUTION_PATH_INSERT:
+        return "insert";
+    case EXECUTION_PATH_INDEXED:
+        return "indexed";
+    case EXECUTION_PATH_FULL_SCAN:
+        return "full_scan";
+    case EXECUTION_PATH_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+ExecutionPath get_last_execution_path(void) {
+    return g_context.last_execution_path;
+}
+
 /* TABLE 노드 아래 자식 두 개에서 schema와 table 이름을 꺼낸다. */
 static int extract_table_names(ASTNode *table_node, char **schema_name, char **table_name) {
     ASTNode *schema_node;
@@ -100,9 +118,12 @@ int execute_statement(ASTNode *root, Status *status) {
         return 0;
     }
 
+    g_context.last_execution_path = EXECUTION_PATH_UNKNOWN;
+
     if (root->type == NODE_INSERT) {
         int inserted_id;
 
+        g_context.last_execution_path = EXECUTION_PATH_INSERT;
         if (!append_binary_row(&g_context, root, &inserted_id, status)) {
             return 0;
         }

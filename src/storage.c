@@ -512,8 +512,11 @@ int execute_select(ExecutionContext *context, ASTNode *root, Status *status) {
     print_selected_header(&context->meta, selected_indexes, selected_count);
 
     if (extract_index_search_id(where_node, &indexed_id)) {
+        context->last_execution_path = EXECUTION_PATH_INDEXED;
         return select_by_id_index(context, indexed_id, selected_indexes, selected_count, status);
     }
+
+    context->last_execution_path = EXECUTION_PATH_FULL_SCAN;
 
     file = fopen(context->meta.data_file_path, "rb");
     if (file == NULL) {
